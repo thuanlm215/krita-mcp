@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local client configuration
+/.codex/
+
+# Package build output
+dist/
+build/
+
+# Output from the example scripts
+poster.png
+poster_preview.png
+banner.png
+docs/banner_preview.png
+
+# Krita
+*.kra~
+*.kra-autosave.kra
+
+# Local verification captures and receipts
+artifacts/
+native/build/
+pykrita/krita_mcp/libkrita_mcp_native.*
+pykrita/krita_mcp/libkrita_mcp_native_*.so
+pykrita/krita_mcp/native_manifest.json

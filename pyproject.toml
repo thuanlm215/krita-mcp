@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "krita-mcp"
+version = "1.4.0"
+description = "MCP server that lets agents drive Krita"
+readme = "README.md"
+requires-python = ">=3.8"
+license = "CC0-1.0"
+license-files = ["LICENSE"]
+authors = [{ name = "thuanlm215" }]
+keywords = ["krita", "mcp", "model-context-protocol"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Graphics",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/thuanlm215/krita-mcp"
+Repository = "https://github.com/thuanlm215/krita-mcp"
+Issues = "https://github.com/thuanlm215/krita-mcp/issues"
+
+[project.scripts]
+krita-mcp = "mcp_server:main"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["mcp_server.py", "painter_schema.py", "pykrita"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+    "mcp_server.py",
+    "painter_schema.py",
+    "pykrita",
+    "README.md",
+    "LICENSE",
+    "install.sh",
+    "install.ps1",
+    "docs",
+    "pyproject.toml",
+]
+
+[tool.hatch.build]
+exclude = [
+    "**/__pycache__",
+    "**/*.pyc",
+    "**/*.pyo",
+    "pykrita/krita_mcp/*.so",
+    "pykrita/krita_mcp/native_manifest.json",
+    "/.gitignore",
+    "/.gitattributes",
+]

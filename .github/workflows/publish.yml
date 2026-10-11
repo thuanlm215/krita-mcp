@@ -1,0 +1,72 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Check the release tag against pyproject.toml
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$tag" != "$version" ]; then
+            echo "Tag v$tag does not match package version $version" >&2
+            exit 1
+          fi
+
+      - name: Build the sdist and wheel
+        run: uv build
+
+      - name: Smoke test the packages
+        run: |
+          set -euo pipefail
+          whl=(dist/*.whl)
+          sdist=(dist/*.tar.gz)
+          if unzip -l "${whl[0]}" | grep -E '\.so$|native_manifest\.json$'; then
+            echo "The wheel contains native build output." >&2
+            exit 1
+          fi
+          for package in "${whl[0]}" "${sdist[0]}"; do
+            count=$(uvx --from "$package" krita-mcp --list-tools | wc -l)
+            count=${count// /}
+            if [ "$count" != "52" ]; then
+              echo "$package listed $count tools" >&2
+              exit 1
+            fi
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/krita-mcp/
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: astral-sh/setup-uv@v5
+
+      - uses: astral-sh/attest-action@v0.0.6
+
+      - name: Publish
+        run: uv publish --trusted-publishing always

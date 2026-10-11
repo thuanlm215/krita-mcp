@@ -1,0 +1,158 @@
+"""Offline codec, PNG response and transport regressions; PyQt6/Pillow, no Krita."""
+import base64
+import http.client
+import importlib
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import threading
+from types import ModuleType, SimpleNamespace
+import unittest
+from unittest.mock import Mock, patch
+
+import mcp_server
+from tests.preview_payload import preview_content
+from tests.test_advanced import png
+
+# Import actual plugin modules without executing its Krita registration hook.
+package = ModuleType("krita_test_plugin")
+package.__path__ = [str(Path(__file__).resolve().parents[1] / "pykrita/krita_mcp")]
+sys.modules[package.__name__] = package
+codec = importlib.import_module(package.__name__ + ".filter_parameters")
+bridge_http = importlib.import_module(package.__name__ + ".httpserver")
+
+
+class CodecTests(unittest.TestCase):
+    def test_qt_defaults_roundtrip_with_precision_and_binary_nulls(self):
+        values = [codec.QColor.fromRgbF(.1234, .4567, .7891, .3333),
+                  codec.QByteArray(b"\0\xffnon-text\0"), True, 7, .123, "text", None,
+                  [codec.QColor("red"), 1, False]]
+        for default in values:
+            encoded, info = codec.describe(default)
+            self.assertTrue(info["writable"])
+            json.dumps(encoded, allow_nan=False)
+            decoded = codec.decode(encoded, default)
+            self.assertEqual(decoded, default)
+            self.assertEqual(type(decoded), type(default))
+
+    def test_malformed_typed_data_and_unsupported_values(self):
+        for value in ({"type": "QColor", "rgba": [True, 0, 0, 1]},
+                      {"type": "QColor", "rgba": [float("nan"), 0, 0, 1]},
+                      {"type": "QColor", "rgba": [0, 0, 0]},
+                      {"type": "QColor", "rgba": [0, 0, 0, 1], "extra": "ignored?"}):
+            with self.assertRaises(ValueError):
+                codec.decode(value, codec.QColor("red"))
+        for value in ({"type": "QByteArray", "base64": "AA==", "byte_length": 2},
+                      {"type": "QByteArray", "base64": "not base64"},
+                      {"type": "QByteArray", "base64": base64.b64encode(b"a"*(codec.MAX_BINARY_BYTES+1)).decode()}):
+            with self.assertRaises(ValueError):
+                codec.decode(value, codec.QByteArray())
+        for default in (object(), float("nan"), codec.QColor()):
+            encoded, info = codec.describe(default)
+            self.assertFalse(info["writable"])
+            json.dumps(encoded, allow_nan=False)
+            with self.assertRaises(ValueError):
+                codec.decode(encoded, default)
+
+
+class TransportTests(unittest.TestCase):
+    def test_preview_recursively_keeps_png_bytes_out_of_text(self):
+        encoded=png(2,2,[120,60,30,255])
+        result={'png_base64':encoded,'hash':'frozen-hash','mapping':{'scale':1},
+                'raw_layer':{'png_base64':encoded,'metrics':{'changed_pixels':4}},
+                'composite':{'before_png_base64':encoded,'after_png_base64':encoded,
+                             'nested':[{'png_base64':encoded,'name':'before'}]}}
+        for tool in ('inspect_repair','compare_images','get_image'):
+            with patch.object(mcp_server.BRIDGE,'call',return_value=result):
+                blocks=mcp_server.call_tool(tool,{})
+            metadata,image,_=preview_content(blocks)
+            self.assertEqual(image.size,(2,2))
+            self.assertEqual(blocks[1]['data'],encoded)
+            self.assertEqual(metadata['composite']['nested'],[{'name':'before'}])
+            self.assertEqual(metadata['raw_layer']['metrics'],{'changed_pixels':4})
+            self.assertEqual(result['png_base64'],encoded)
+
+    def test_image_text_guard_preserves_typed_binary_filter_parameters(self):
+        binary={'type':'QByteArray','base64':'AA==','byte_length':1}
+        with patch.object(mcp_server.BRIDGE,'call',return_value={'parameter':binary,
+            'diagnostics':[{'before_png_base64':png(1,1,[0,0,0,0]),'hash':'kept'}]}):
+            blocks=mcp_server.call_tool('list_capabilities',{})
+        self.assertEqual(json.loads(blocks[0]['text']),{'parameter':binary,'diagnostics':[{'hash':'kept'}]})
+
+    def test_http_fallback_does_not_leak_result_and_keeps_serving(self):
+        token = "secret-session-token-never-in-errors"
+        bridge = SimpleNamespace(token=token, trace=SimpleNamespace(write=lambda text: None),
+                                 timeout_for=lambda name: 1, log=lambda text: None)
+        def run(name, params, timeout):
+            return 200, {"ok": True, "result": {"secret": token, "bad": object()}} if name == "fault" else {
+                "ok": True, "result": {"healthy": True}}
+        bridge.run = run
+        server = bridge_http._Server(("127.0.0.1", 0), bridge_http._Handler, bridge)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01})
+        thread.start()
+        client = mcp_server.BridgeClient()
+        client._info = {"host": "127.0.0.1", "port": server.server_port, "token": token}
+        try:
+            with self.assertRaises(mcp_server.BridgeError) as caught:
+                client.call("fault")
+            error = caught.exception
+            self.assertEqual(error.kind, "response_serialization_error")
+            self.assertEqual(error.detail, {"operation": "fault", "exception": "TypeError"})
+            self.assertNotIn(token, str(error) + json.dumps(error.detail))
+            self.assertEqual(client.call("status"), {"healthy": True})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_incomplete_response_is_never_retried_as_an_edit(self):
+        for fault in (http.client.RemoteDisconnected("closed"), http.client.IncompleteRead(b"partial", 100)):
+            client = mcp_server.BridgeClient()
+            client._info = {"host": "127.0.0.1", "port": 1, "token": "unused"}
+            client._request = Mock(side_effect=fault)
+            with self.assertRaises(mcp_server.BridgeError) as caught:
+                client.call("draw_brush")
+            self.assertEqual(caught.exception.kind, "incomplete_response")
+            self.assertNotIn("Is Krita running", str(caught.exception))
+            self.assertEqual(client._request.call_count, 1)
+
+
+class InstallConfigTests(unittest.TestCase):
+    def test_plugin_files_ship_next_to_the_server(self):
+        source = mcp_server.plugin_source_dir()
+        self.assertTrue(os.path.isfile(os.path.join(source, "krita_mcp.desktop")))
+        self.assertTrue(os.path.isdir(os.path.join(source, "krita_mcp")))
+
+    def test_enable_flag_preserves_other_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kritarc")
+            with open(path, "w", encoding="utf-8", newline="") as handle:
+                handle.write("[general]\r\nfoo=1\r\n\r\n[python]\r\n"
+                             "enable_krita_mcp=false\r\nother=1\r\n[ui]\r\nx=1\r\n")
+            mcp_server.enable_plugin_flag(path)
+            with open(path, "r", encoding="utf-8", newline="") as handle:
+                text = handle.read()
+            self.assertIn("[general]\r\nfoo=1\r\n", text)
+            self.assertIn("enable_krita_mcp=true\r\n", text)
+            self.assertIn("other=1\r\n[ui]\r\nx=1\r\n", text)
+            self.assertNotIn("enable_krita_mcp=false", text)
+            mcp_server.enable_plugin_flag(path)
+            with open(path, "r", encoding="utf-8") as handle:
+                again = handle.read()
+            self.assertEqual(again.count("enable_krita_mcp=true"), 1)
+
+    def test_enable_flag_creates_a_missing_python_section(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "kritarc")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("[general]\nfoo=1\n")
+            mcp_server.enable_plugin_flag(path)
+            with open(path, "r", encoding="utf-8") as handle:
+                text = handle.read()
+            self.assertEqual(text, "[general]\nfoo=1\n\n[python]\nenable_krita_mcp=true\n")
+
+
+if __name__ == "__main__":
+    unittest.main()

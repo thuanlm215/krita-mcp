@@ -1,0 +1,18 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install offline test libraries
+        run: pip install PyQt6 pillow
+      - name: Run tests that do not need Krita
+        run: python -m unittest tests.test_core tests.test_transport tests.test_shutdown tests.test_planner tests.test_feedback tests.test_isolated_log_gate
