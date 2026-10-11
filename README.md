@@ -6,7 +6,7 @@ Give an agent a real Krita file. It can build the layer stack, select a part, tu
 
 Read the picture from the back of the desk forward. The three sheets are a layer stack: wash, line, color. The dashed loop and the pins are a selection swung around a pivot. The bristle mark is one native stroke that starts light and ends heavy. The four cells are raster frames. The split lens is a repair: the crack on one side, the same pane whole on the other.
 
-[thuanlm215](https://github.com/thuanlm215) maintains this project. Version **1.4.0** is published as [`krita-mcp`](https://pypi.org/project/krita-mcp/). It exposes fifty-two tools and sixty-one bridge operations. The tool list is in [docs/usage.md](docs/usage.md). The call order for a pose, a warp, a frame, and a repair is in [docs/workflows.md](docs/workflows.md).
+[thuanlm215](https://github.com/thuanlm215) maintains this project. Version **1.4.1** is published as [`krita-mcp`](https://pypi.org/project/krita-mcp/). It exposes fifty-two tools and sixty-one bridge operations. The tool list is in [docs/usage.md](docs/usage.md). The call order for a pose, a warp, a frame, and a repair is in [docs/workflows.md](docs/workflows.md).
 
 ## What has to be installed
 
