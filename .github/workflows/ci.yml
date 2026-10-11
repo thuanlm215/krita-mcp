@@ -12,7 +12,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Install Qt system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libglib2.0-0 libxkbcommon0 libdbus-1-3 \
+            libfontconfig1 libxcb-cursor0 libxkbcommon-x11-0
       - name: Install offline test libraries
         run: pip install PyQt6 pillow
       - name: Run tests that do not need Krita
+        env:
+          QT_QPA_PLATFORM: offscreen
         run: python -m unittest tests.test_core tests.test_transport tests.test_shutdown tests.test_planner tests.test_feedback tests.test_isolated_log_gate
