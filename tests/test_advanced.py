@@ -7,6 +7,7 @@ import struct
 import unittest
 import zlib
 
+from tests.stroke_spec import stroke_spec
 from tests.test_mcp import _image_of, _text_of
 import tests.test_workflow as workflow
 
@@ -342,5 +343,113 @@ class AdvancedTests(unittest.TestCase):
         self.assertEqual(payload['saved_to'],str(out))
         self.assertEqual([block['type'] for block in result['content']],['text'])
         self.assertEqual(out.read_bytes()[:8],b'\x89PNG\r\n\x1a\n')
+
+    def alpha_at(self,x,y,layer='Paint'):
+        return bytes.fromhex(self.fixture('pixels',layer=layer,rect=[x,y,1,1]))[3]
+
+    def layer_names(self):
+        return [n['name'] for n in self.call('inspect_document')['layers']]
+
+    def test_brush_strokes_share_one_undo(self):
+        before=self.digest()
+        r=self.call('draw_brush',layer='Paint',preset='b) Basic-5 Size',size=8,color='red',
+                    strokes=[{'points':[{'x':10,'y':30},{'x':110,'y':30}]},
+                             {'points':[{'x':10,'y':90},{'x':110,'y':90}],'color':'blue','size':16}])
+        self.assertEqual((r['strokes'],r['undo_steps']),(2,1))
+        top,bottom=self.pixel(60,30),self.pixel(60,90)
+        self.assertGreater(top[0],200);self.assertLess(top[2],60)
+        self.assertGreater(bottom[2],200);self.assertLess(bottom[0],60)
+        raw=bytes.fromhex(self.fixture('pixels'))
+        column=lambda y0,y1:sum(raw[(y*128+60)*4+3]>0 for y in range(y0,y1))
+        self.assertLess(column(15,45),column(75,105))
+        self.call('undo');self.assertEqual(self.digest(),before)
+        line=[{'x':10,'y':10},{'x':20,'y':20}]
+        self.assertIn('not both',self.failed('draw_brush',layer='Paint',points=line,strokes=[{'points':line}]))
+        self.assertEqual(self.digest(),before)
+
+    def test_ink_and_svg_commands(self):
+        self.call('draw',layer='Paint',commands=[{'type':'ink','color':[0,0,0,128],
+                  'points':[[10,64,2],[40,30,12],[80,100,12],[118,64,2]]}])
+        alphas=bytes.fromhex(self.fixture('pixels'))[3::4]
+        # Overlapping pieces fill once: translucent ink has no darker joints.
+        self.assertEqual(max(alphas),128);self.assertGreater(alphas.count(128),300)
+        svg=('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">'
+             '<rect width="20" height="10" fill="#00f"/></svg>')
+        path=Path(self.temp.name)/self.doc/'box.svg'
+        path.parent.mkdir(exist_ok=True);path.write_text(svg)
+        self.call('create_layer',name='Vector')
+        self.call('draw',layer='Vector',commands=[{'type':'svg','x':4,'y':4,'svg':svg},
+                                                  {'type':'svg','x':40,'y':4,'w':40,'path':str(path)}])
+        self.assertEqual(self.pixel(23,13,'Vector'),[0,0,255,255])
+        self.assertEqual(self.alpha_at(24,13,'Vector'),0);self.assertEqual(self.alpha_at(23,14,'Vector'),0)
+        self.assertEqual(self.pixel(79,23,'Vector'),[0,0,255,255]);self.assertEqual(self.alpha_at(79,24,'Vector'),0)
+        self.assertIn('could not be parsed',self.failed('draw',layer='Vector',commands=[{'type':'svg','svg':'<nope'}]))
+
+    def test_outline_layer_positions_and_undo(self):
+        self.draw_rect(40,40,40,40,'red')
+        r=self.call('outline_layer',layer='Paint',width=3,color='blue')
+        self.assertEqual((r['layer']['name'],r['undo_steps']),('Paint outline',1))
+        names=self.layer_names();self.assertEqual(names[names.index('Paint')+1],'Paint outline')
+        outline=lambda x,y,layer='Paint outline':self.pixel(x,y,layer)
+        # Outside goes under the source and fills beneath it.
+        self.assertEqual(outline(38,60),[0,0,255,255]);self.assertEqual(outline(60,60),[0,0,255,255])
+        self.assertEqual(self.alpha_at(35,60,'Paint outline'),0)
+        self.assertEqual(self.alpha_at(36,36,'Paint outline'),0)
+        self.assertGreater(self.alpha_at(38,38,'Paint outline'),200)
+        self.call('undo');self.assertNotIn('Paint outline',self.layer_names())
+        self.call('outline_layer',layer='Paint',width=4,position='inside',color='lime',name='Inner')
+        names=self.layer_names();self.assertEqual(names[names.index('Inner')+1],'Paint')
+        self.assertEqual(outline(41,60,'Inner'),[0,255,0,255])
+        self.assertEqual(self.alpha_at(60,60,'Inner'),0);self.assertEqual(self.alpha_at(38,60,'Inner'),0)
+        self.call('outline_layer',layer='Paint',width=1,antialias=False,name='Pixel')
+        self.assertEqual(self.alpha_at(39,60,'Pixel'),255);self.assertEqual(self.alpha_at(39,39,'Pixel'),0)
+        self.call('create_layer',name='Empty')
+        self.assertIn('no pixels',self.failed('outline_layer',layer='Empty'))
+
+    def test_export_layers_trim_padding_and_manifest(self):
+        from PIL import Image
+        self.draw_rect(10,20,30,15,'red')
+        self.call('create_layer',name='Top');self.draw_rect(70,70,8,9,'blue',layer='Top')
+        out=Path(self.temp.name)/self.doc/'parts'
+        r=self.call('export_layers',directory=str(out),padding=2)
+        self.assertFalse(r['mutated'])
+        entries={e['layer']:e for e in json.loads((out/'manifest.json').read_text())['layers']}
+        self.assertEqual(set(entries),{'Paint','Top'})
+        box=lambda e:[e[k] for k in ('x','y','width','height')]
+        self.assertEqual(box(entries['Paint']),[8,18,34,19]);self.assertEqual(box(entries['Top']),[68,68,12,13])
+        with Image.open(out/entries['Top']['file']) as image:
+            rgba=image.convert('RGBA')
+            self.assertEqual(rgba.size,(12,13))
+            self.assertEqual(rgba.getpixel((2,2)),(0,0,255,255));self.assertEqual(rgba.getpixel((1,1))[3],0)
+        self.assertIn('must be new',self.failed('export_layers',directory=str(out)))
+        full=Path(self.temp.name)/self.doc/'full'
+        self.call('export_layers',directory=str(full),layers=['Top'],trim=False)
+        entry=json.loads((full/'manifest.json').read_text())['layers'][0]
+        self.assertEqual(box(entry),[0,0,128,128])
+
+    def test_file_layer_links_an_image(self):
+        path=self.png_file('linked.png',16,8,[0,128,255,255])
+        r=self.call('create_layer',name='Linked',type='filelayer',path=path)
+        self.assertTrue(r['file']['loaded']);self.assertEqual(r['layer']['type'],'filelayer')
+        self.assertEqual(self.pixel(15,7,'Linked'),[0,128,255,255])
+        self.assertEqual(bytes.fromhex(self.fixture('pixels',layer='Linked',projection=True,rect=[16,7,1,1]))[3],0)
+        self.assertIn('only to type filelayer',self.failed('create_layer',name='Wrong',path=path))
+        self.assertIn('does not exist',self.failed('create_layer',name='Missing',type='filelayer',
+                                                   path=str(Path(self.temp.name)/'missing.png')))
+
+    def test_planned_stroke_on_a_canvas_over_one_megapixel(self):
+        large=self.call('create_document',width=1400,height=1000,name='large-'+self.doc)['session_id']
+        self.client.ok('create_layer',{'document':large,'name':'Paint'})
+        layers=self.client.ok('inspect_document',{'document':large})[0]['layers']
+        target={'document':large,'layer':'uuid:'+next(n['uuid'] for n in layers if n['name']=='Paint'),
+                'scope':{'kind':'static'}}
+        spec=stroke_spec(target,{'kind':'polyline','points':[[100,500],[1300,500]]},size=20)
+        spec['expected_bounds']={'x':0,'y':0,'width':1400,'height':1000}
+        spec['limits']['spacing']=12
+        r=self.client.ok('paint_stroke',{'spec':spec})[0]
+        self.assertGreater(r['changed_pixels'],20000)
+        self.assertLess(r['actual_bounds']['x'],100);self.assertGreater(r['actual_bounds']['width'],1200)
+        pixel=self.client.ok('get_pixel',{'document':large,'layer':'Paint','x':700,'y':500})[0]
+        self.assertEqual(pixel['rgba'][3],255)
 
 if __name__=='__main__':unittest.main(verbosity=2)

@@ -204,6 +204,87 @@ class ArgumentFileTests(unittest.TestCase):
             self.assertEqual(error.kind, "invalid_request")
 
 
+class AssetToolTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+        from PyQt6 import QtWidgets
+        cls.app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        cls.ops = importlib.import_module(package.__name__ + ".ops")
+        cls.painting = importlib.import_module(package.__name__ + ".operations.painting")
+        cls.assets = importlib.import_module(package.__name__ + ".operations.assets")
+
+    def test_new_tools_and_arguments_are_published(self):
+        tools = mcp_server.TOOLS_BY_NAME
+        self.assertTrue({"outline_layer", "export_layers"} <= set(tools))
+        self.assertEqual(tools["draw_brush"]["_required"], [])
+        self.assertIn("strokes", tools["draw_brush"]["inputSchema"]["properties"])
+        self.assertEqual(tools["export_layers"]["_required"], ["directory"])
+        self.assertTrue({"path", "scaling"} <= set(tools["create_layer"]["inputSchema"]["properties"]))
+        command = tools["draw"]["inputSchema"]["properties"]["commands"]["items"]["properties"]
+        self.assertTrue({"svg", "smooth", "rx", "ry", "angle", "path"} <= set(command))
+
+    def test_changed_spans_match_a_per_pixel_scan(self):
+        import random
+        rng = random.Random(7)
+        for _ in range(200):
+            width, height = rng.randint(1, 24), rng.randint(1, 24)
+            before = bytes(rng.randrange(256) for _ in range(width * height * 4))
+            after = bytearray(before)
+            for _ in range(rng.randint(0, 20)):
+                i = rng.randrange(len(after))
+                after[i] = (after[i] + rng.randint(1, 255)) % 256
+            after = bytes(after)
+            expected = [i // 4 for i in range(0, len(before), 4) if before[i:i + 4] != after[i:i + 4]]
+            found = [i for start, end in self.painting._changed_spans(before, after, width)
+                     for i in range(start, end) if before[i * 4:i * 4 + 4] != after[i * 4:i * 4 + 4]]
+            self.assertEqual(found, expected)
+
+    def render(self, commands, width=160, height=120):
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtGui import QImage, QPainter
+        image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
+        image.fill(0)
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        for index, command in enumerate(commands):
+            self.ops._run_command(painter, self.ops._prepare(command, index), QRect(0, 0, width, height))
+        painter.end()
+        return image.convertToFormat(QImage.Format.Format_ARGB32)
+
+    def test_translucent_ink_fills_its_overlaps_once(self):
+        image = self.render([{"type": "ink", "color": [0, 0, 0, 128],
+                              "points": [[10, 60, 2], [50, 20, 16], [100, 90, 16], [150, 60, 1]]}])
+        alphas = [image.pixelColor(x, y).alpha() for x in range(160) for y in range(120)]
+        self.assertEqual(max(alphas), 128)
+        self.assertGreater(alphas.count(128), 800)
+        for bad in ({"type": "ink", "points": [[0, 0]]}, {"type": "ink", "points": [[0, 0, -1], [5, 5]]},
+                    {"type": "svg", "svg": "<nope"}, {"type": "svg"}):
+            with self.assertRaises(self.ops.OpError):
+                self.ops._prepare(bad, 0)
+
+    def test_svg_keeps_its_aspect_when_one_side_is_given(self):
+        svg = ('<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">'
+               '<rect width="20" height="10" fill="#f00"/></svg>')
+        image = self.render([{"type": "svg", "x": 10, "y": 10, "w": 40, "svg": svg}])
+        self.assertEqual(image.pixelColor(49, 29).getRgb(), (255, 0, 0, 255))
+        self.assertEqual(image.pixelColor(49, 30).alpha(), 0)
+        self.assertEqual(image.pixelColor(50, 29).alpha(), 0)
+
+    def test_outline_dilation_is_round(self):
+        from PyQt6.QtGui import QImage
+        size = 64
+        alpha = bytearray(size * size)
+        alpha[32 * size + 32] = 255
+        dot = self.assets._alpha_image(bytes(alpha), size, size)
+        grown = self.assets._dilate(dot, 5, True).convertToFormat(QImage.Format.Format_ARGB32)
+        self.assertEqual(grown.pixelColor(37, 32).alpha(), 255)
+        self.assertEqual(grown.pixelColor(38, 32).alpha(), 0)
+        self.assertEqual(grown.pixelColor(35, 35).alpha(), 255)
+        self.assertTrue(0 < grown.pixelColor(36, 36).alpha() < 255)
+        self.assertEqual(grown.pixelColor(37, 37).alpha(), 0)
+
+
 class InstallConfigTests(unittest.TestCase):
     def test_plugin_files_ship_next_to_the_server(self):
         source = mcp_server.plugin_source_dir()

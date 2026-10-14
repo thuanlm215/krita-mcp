@@ -10,7 +10,8 @@ from .selections import mask_selection
 
 ALLOWED = {"draw", "draw_brush", "select_polygon", "select_content", "set_selection",
            "selection_to_layer", "transform_layer", "texture_patch", "clone_stamp",
-           "mask_layer", "bake_layer", "create_layer", "apply_filter", "animation_frame"}
+           "mask_layer", "bake_layer", "outline_layer", "create_layer", "apply_filter",
+           "animation_frame"}
 SNAPSHOTS = getattr(builtins,"_krita_mcp_preview_snapshots",None)
 if SNAPSHOTS is None:
     SNAPSHOTS={}; builtins._krita_mcp_preview_snapshots=SNAPSHOTS

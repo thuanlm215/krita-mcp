@@ -4,7 +4,7 @@ Helper-backed steps below require the Linux / Krita 6.0.4 native helper describe
 
 Call `inspect_document` and pass an explicit document and layer. Session ids belong to the open document and change when it closes. Prefer `"uuid:…"` when two layers share a name.
 
-Painter and repair targets in this version are unlocked, alpha-unlocked, unmasked RGBA/U8 paint layers using `sRGB-elle-V2-srgbtrc.icc`, with no transformed or locked ancestors, and a source extent of at most 1 megapixel. Static clone, patch, and warp tools keep their own animated-layer guards.
+Painter and repair targets in this version are unlocked, alpha-unlocked, unmasked RGBA/U8 paint layers using `sRGB-elle-V2-srgbtrc.icc`, with no transformed or locked ancestors. `plan_stroke` and `paint_stroke` accept canvases up to 16 megapixels. Repairs and colour feedback keep a canvas of at most 1 megapixel. Static clone, patch, and warp tools keep their own animated-layer guards.
 
 ## Extract, pose, and clean up
 

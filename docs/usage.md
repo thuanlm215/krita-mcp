@@ -1,6 +1,6 @@
 # Using Krita MCP
 
-Version 1.4 exposes 52 tools and 61 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
+Version 1.4 exposes 54 tools and 63 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
 
 ## Tools
 
@@ -13,7 +13,7 @@ Version 1.4 exposes 52 tools and 61 bridge operations. Reconnect the MCP client 
 | `save_document` / `export_document` | Save in place or save-as; export PNG, JPEG, and other formats Krita supports |
 | `close_document` | Close a document. See [Closing documents](#closing-documents) |
 | `transform_image` | Resize canvas, scale, rotate, crop, flatten |
-| `create_layer` / `set_layer` / `delete_layer` | Layer stack |
+| `create_layer` / `set_layer` / `delete_layer` | Layer stack, including file layers linked to an image |
 | `duplicate_layer` / `move_layer` / `merge_layer_down` | Restack and merge |
 | `get_image` | Render the canvas and return a PNG |
 | `get_pixel` | Colour at one pixel |
@@ -29,6 +29,7 @@ Version 1.4 exposes 52 tools and 61 bridge operations. Reconnect the MCP client 
 | `select_content` | Alpha, colour, contiguous region, and imported masks |
 | `texture_patch` / `clone_stamp` | Masked texture placement and sampled cloning |
 | `mask_layer` / `bake_layer` | Transparency masks and baked paint layers |
+| `outline_layer` / `export_layers` | Antialiased sprite outlines; one trimmed PNG per layer with a manifest |
 | `edit_batch` / `preview_changes` | One Undo group with rollback, and before/after/difference |
 | `animation_frame` / `export_animation` | Raster keyframes, onion skin, FPS, PNG sequence, atlas, manifest |
 | `import_animation` / `animation_review` | Registered PNG import and previous/current/next panels |
@@ -45,7 +46,7 @@ Sequences for extraction, brushes, warp, animation, and repair are in [workflows
 
 `draw` paints a list of commands, in order, onto an RGBA/8-bit paint layer:
 
-`fill_rect`, `rect` (optional corner radius), `ellipse`, `circle`, `line`, `polyline`, `polygon`, `text`, `linear_gradient`, `radial_gradient`, `image`, and `clear`.
+`fill_rect`, `rect` (optional corner radius), `ellipse`, `circle`, `line`, `polyline`, `polygon`, `ink`, `text`, `linear_gradient`, `radial_gradient`, `image`, `svg`, and `clear`.
 
 The active selection constrains these commands, including feathered alpha. Colours accept `#rrggbb`, `#rrggbbaa`, SVG names, or `[r, g, b, a]`.
 
@@ -53,11 +54,21 @@ Geometry uses `w` and `h`. Outline thickness is `stroke_width`. Only the union o
 
 **Gradients.** Both take `stops`, such as `[[0, "#fff"], [1, "#fff0"]]`. `linear_gradient` fills its `x, y, w, h` box along `direction` (`horizontal`, `vertical`, `diagonal`), or along explicit `x1, y1, x2, y2`. `radial_gradient` given `cx, cy` and `radius` (or `rx` and `ry`, with `angle` in degrees clockwise) fills only that ellipse, and the last stop lands on its edge. Given a box instead, it fills the ellipse inscribed in the box, so a wide box gives a soft oval, not a cut-off circle.
 
-**Bitmaps.** `image` takes base64 PNG `data` or an absolute `path` to a PNG, JPEG, WebP, or BMP file of up to 48 MiB. With neither `w` nor `h` the image keeps its natural size; with one of them it keeps its aspect ratio.
+**Ink.** `ink` fills a line whose width varies along it. Each point is `[x, y]` or `[x, y, width]`; a point without a width uses `stroke_width`. Taper the ends by giving them small widths. `smooth` (default `true`) passes a Catmull-Rom curve through the points. Overlaps fill once, so a translucent colour has no darker joints.
+
+**Bitmaps.** `image` takes base64 PNG `data` or an absolute `path` to a PNG, JPEG, WebP, or BMP file of up to 48 MiB. With neither `w` nor `h` the image keeps its natural size; with one of them it keeps its aspect ratio. `svg` takes `svg` markup or an absolute `.svg` `path` (up to 8 MiB) and rasterises it the same way. It needs Qt's SVG module, which Krita builds normally ship; without it the command returns `unsupported`.
 
 **Alpha lock.** `create_layer` and `set_layer` take `alpha_locked` and `inherit_alpha`. On an alpha-locked layer, `draw` and `draw_brush` change colour only where pixels already exist, and `draw` skips `clear` commands. Layer listings show both flags only when they are set.
 
-**Native strokes.** `draw_brush` rejects a point outside the canvas and names it. Pass `clamp: true` to pull such points onto the nearest edge.
+**Native strokes.** `draw_brush` rejects a point outside the canvas and names it. Pass `clamp: true` to pull such points onto the nearest edge. Pass `strokes` instead of `points` to paint up to 64 strokes in one call and one Undo entry. Each stroke may set its own `color`, `size`, `opacity`, and `erase`; unset values come from the top level. One preset and mode apply to every stroke.
+
+**File layers.** `create_layer` with `type: "filelayer"` and an absolute `path` links an image file. Krita reloads the layer when the file changes. `scaling` is `none`, `to_image_size`, or `to_ppi`. The result reports whether the file finished loading. `get_pixel` reads what a file, fill, clone, vector, or group layer renders.
+
+## Game assets
+
+`outline_layer` traces the rendered alpha of a layer onto a new paint layer. `width` is 0.5 to 32 pixels. `position` `outside` (the default) puts the outline under the source and fills beneath it, so antialiased source edges leave no seam. `inside` and `center` put it above the source. `antialias: false` gives a hard pixel-art outline from alpha 128 and up, four-connected at width 1. The source is untouched, and the new layer is one Undo entry.
+
+`export_layers` writes one PNG per layer and a `manifest.json` into a new directory. It exports the visible top-level layers unless `layers` names others. `trim` (default `true`) crops each PNG to its exact alpha bounds. `padding` adds a transparent margin. The manifest gives each file's canvas `x` and `y`, which can be negative after padding, so an engine can place the parts back where they were drawn. The document is not changed.
 
 ## Files instead of inline data
 

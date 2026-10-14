@@ -271,6 +271,9 @@ DRAW_COMMAND = {
         "- line: x1, y1, x2, y2, color, stroke_width, cap (flat|square|round)\n"
         "- polyline / polygon: points [[x,y],...], color, fill, stroke_width, "
         "close\n"
+        "- ink: points [[x,y,width],...] (width optional, else stroke_width), "
+        "color, smooth (default true): a filled line whose width varies per "
+        "point, for tapered inking\n"
         "- text: x, y, text, size (pixels), color, font, bold, italic, "
         "anchor (top-left|baseline|center); \\n starts a new line\n"
         "- linear_gradient: x, y, w, h (fill box), stops [[0,\"#000\"],[1,\"#fff\"]], "
@@ -279,6 +282,7 @@ DRAW_COMMAND = {
         "the box) or cx, cy, radius (or rx, ry, angle) to fill only that ellipse\n"
         "- image: x, y, data (base64 PNG/JPEG) or path (absolute file path); "
         "w, h optional, natural size if both omitted\n"
+        "- svg: x, y, svg (markup) or path (absolute .svg file); w, h as for image\n"
         "- clear: x, y, w, h to erase back to transparency\n"
         "Colours accept #rrggbb, #rrggbbaa, SVG names, or [r,g,b,a]."
     ),
@@ -305,7 +309,11 @@ DRAW_COMMAND = {
         "close": {"type": "boolean"},
         "points": {"type": "array", "items": {
             "type": "array", "items": {"type": "number"},
-            "minItems": 2, "maxItems": 2}},
+            "minItems": 2, "maxItems": 3},
+            "description": "[x, y] pairs; ink also takes [x, y, width]."},
+        "smooth": {"type": "boolean", "default": True,
+                   "description": "ink: pass a Catmull-Rom curve through the points."},
+        "svg": {"type": "string", "description": "SVG markup for an svg command."},
         "text": {"type": "string"},
         "size": {"type": "integer"},
         "font": {"type": "string"},
@@ -318,11 +326,24 @@ DRAW_COMMAND = {
         "stops": {"type": "array", "items": {"type": "array"}},
         "data": {"type": "string", "description": "base64 image bytes"},
         "path": {"type": "string",
-                 "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data"},
+                 "description": "Absolute PNG/JPEG/WebP/BMP path for image, or .svg "
+                                "path for svg; instead of data or svg markup"},
     },
     "required": ["type"],
 }
 
+
+BRUSH_POINTS = {
+    "type": "array", "minItems": 2, "maxItems": 128,
+    "items": {"type": "object", "properties": {
+        "x": {"type": "number"}, "y": {"type": "number"},
+        "pressure": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
+        "tilt_x": {"type": "number", "minimum": -60, "maximum": 60},
+        "tilt_y": {"type": "number", "minimum": -60, "maximum": 60},
+        "timestamp_ms": {"type": "number", "minimum": 0,
+                         "description": "Increasing sample time; default 16 ms spacing."}},
+        "required": ["x", "y"], "additionalProperties": False},
+}
 
 ALPHA_LOCKED_PROP = {
     "type": "boolean",
@@ -526,7 +547,8 @@ TOOLS = [
 
     tool("create_layer",
          "Add a layer. New layers go to the top of their parent unless you "
-         "pass `index` (0 is topmost, negative counts from the bottom).",
+         "pass `index` (0 is topmost, negative counts from the bottom). A "
+         "filelayer with `path` links an image file and follows its changes.",
          {"document": DOCUMENT_PROP,
           "name": {"type": "string", "default": "Layer"},
           "type": {"type": "string", "default": "paintlayer",
@@ -538,6 +560,10 @@ TOOLS = [
                      "description": "A group layer to nest inside; omit for "
                                     "the top level."},
           "index": {"type": "integer"},
+          "path": {"type": "string",
+                   "description": "filelayer: absolute path of the image file to link."},
+          "scaling": {"type": "string", "enum": ["none", "to_image_size", "to_ppi"],
+                      "default": "none", "description": "filelayer: how to fit the file."},
           "select": {"type": "boolean", "default": True},
           "opacity": {"type": "number"},
           "blending_mode": {"type": "string"},
@@ -624,7 +650,9 @@ TOOLS = [
          "and selection. Pressure/continuous modes keep one native stroke across "
          "pressure, tilt and timestamp samples with one Undo. Requires the native helper. "
          "Segments mode retains independent lines. Path mode "
-         "paints a connected path at pressure 1 with one Undo entry. Brush UI "
+         "paints a connected path at pressure 1 with one Undo entry. Pass `strokes` "
+         "instead of `points` to paint up to 64 strokes in one call and one Undo; "
+         "each may set its own color, size, opacity and erase. Brush UI "
          "settings are restored. Use an unmasked Cleanup layer above transformed parts.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "preset": {"type": "string", "description": "Exact name from list_brushes."},
@@ -633,19 +661,20 @@ TOOLS = [
           "color": {"type": ["string", "array"], "default": "#000000"},
           "erase": {"type": "boolean", "default": False},
           "mode": {"type": "string", "enum": ["pressure", "continuous", "segments", "path"], "default": "pressure"},
-          "points": {"type": "array", "minItems": 2, "maxItems": 128,
-                     "items": {"type": "object", "properties": {
-                         "x": {"type": "number"}, "y": {"type": "number"},
-                         "pressure": {"type": "number", "minimum": 0, "maximum": 1,
-                                      "default": 1},
-                         "tilt_x": {"type": "number", "minimum": -60, "maximum": 60},
-                         "tilt_y": {"type": "number", "minimum": -60, "maximum": 60},
-                         "timestamp_ms": {"type": "number", "minimum": 0,
-                                          "description": "Increasing sample time; default 16 ms spacing."}}, "required": ["x", "y"],
-                         "additionalProperties": False}},
+          "points": BRUSH_POINTS,
+          "strokes": {"type": "array", "minItems": 1, "maxItems": 64,
+                      "description": "Several strokes in one Undo; unset settings "
+                                     "inherit the top-level ones.",
+                      "items": {"type": "object", "properties": {
+                          "points": BRUSH_POINTS,
+                          "color": {"type": ["string", "array"]},
+                          "size": {"type": "number", "minimum": 0.1, "maximum": 2048},
+                          "opacity": {"type": "number", "minimum": 0, "maximum": 1},
+                          "erase": {"type": "boolean"}},
+                          "required": ["points"], "additionalProperties": False}},
           "clamp": {"type": "boolean", "default": False,
                     "description": "Pull off-canvas points onto the nearest edge "
-                                   "instead of rejecting the call."}}, required=["points"]),
+                                   "instead of rejecting the call."}}),
 
     tool("select_polygon",
          "Set a closed polygon/lasso selection in document pixels; supports "
@@ -755,7 +784,7 @@ TOOLS = [
 
     tool("edit_batch", "Apply up to 64 edits to one document as one native Undo group. "
          "On error, undo the group and discard its redo. Supports draw/brush, selection, extraction, "
-         "transform apply, patch/clone, mask, bake, layer creation, filters and blank/duplicate frames. "
+         "transform apply, patch/clone, mask, bake, outline, layer creation, filters and blank/duplicate frames. "
          "A new edit discards an existing redo branch according to Krita's normal history behavior.",
          {"document": DOCUMENT_PROP, "label": {"type": "string"},
           "edits": {"type": "array", "minItems": 1, "maxItems": 64, "items": {
@@ -774,6 +803,32 @@ TOOLS = [
     tool("bake_layer", "Bake the static layer/group projection and masks into a new paint "
          "layer and hide the preserved source. One grouped native Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP, "name": {"type": "string"}}),
+
+    tool("outline_layer", "Trace an antialiased outline around a layer's rendered alpha "
+         "onto a new paint layer, as for a sprite or sticker edge. outside goes "
+         "under the source and fills beneath it; inside and center go above it. "
+         "The source is untouched. One grouped native Undo.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "width": {"type": "number", "minimum": 0.5, "maximum": 32, "default": 2,
+                    "description": "Outline thickness in pixels."},
+          "color": {"type": ["string", "array"], "default": "#000000"},
+          "position": {"type": "string", "enum": ["outside", "inside", "center"],
+                       "default": "outside"},
+          "antialias": {"type": "boolean", "default": True,
+                        "description": "false gives a hard pixel-art outline from alpha >= 128."},
+          "name": {"type": "string", "description": "New layer name; default '<layer> outline'."}}),
+
+    tool("export_layers", "Write each layer as its own PNG plus manifest.json with canvas "
+         "offsets into a new directory, for sprite parts and game assets. Defaults "
+         "to the visible top-level layers. trim crops to exact alpha bounds; padding "
+         "adds a transparent margin. Read-only for the document.",
+         {"document": DOCUMENT_PROP, "directory": {"type": "string",
+                                                   "description": "Absolute path of a new directory."},
+          "layers": {"type": "array", "items": LAYER_PROP, "minItems": 1, "maxItems": 256},
+          "trim": {"type": "boolean", "default": True,
+                   "description": "false exports full-canvas images."},
+          "padding": {"type": "integer", "minimum": 0, "maximum": 512, "default": 0}},
+         required=["directory"]),
 
     tool("preview_changes", "Capture a composite checkpoint, compare before/after with a "
          "difference map, or discard it. Panels: before, after, magenta changed pixels. "

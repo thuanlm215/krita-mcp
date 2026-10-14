@@ -7,7 +7,9 @@ PROFILE = 'sRGB-elle-V2-srgbtrc.icc'
 MAX_WORK_PIXELS = 1024*1024
 
 
-def resolve(target, allow_frame=False):
+def resolve(target, allow_frame=False, canvas_limit=MAX_WORK_PIXELS):
+    """Document and layer of an explicit target. Repairs and feedback keep a
+    1 megapixel canvas; planned strokes pass the larger buffer limit."""
     if not isinstance(target,dict) or set(target) != {'document','layer','scope'}:
         raise b.OpError('Explicit target requires document, layer and scope')
     if not isinstance(target['document'],str) or not target['document'].startswith('session:'):
@@ -19,8 +21,9 @@ def resolve(target, allow_frame=False):
     if node.alphaLocked():raise b.OpError('Pilot requires alpha-unlocked layers',kind='unsupported')
     if node.colorModel() != 'RGBA' or node.colorDepth() != 'U8' or node.colorProfile() != PROFILE:
         raise b.OpError('Pilot requires unmasked RGBA/U8 '+PROFILE,kind='unsupported')
-    if doc.width()*doc.height() > MAX_WORK_PIXELS:
-        raise b.OpError('Pilot canvas budget is 1 megapixel',kind='resource_limit')
+    if doc.width()*doc.height() > canvas_limit:
+        raise b.OpError('Canvas exceeds the {0:g} megapixel budget of this tool'
+                        .format(canvas_limit/(1024*1024)),kind='resource_limit')
     scope = target['scope']
     if scope == {'kind':'static'}:
         if node.animated(): raise b.OpError('Animated target needs explicit frame scope',kind='unsupported')

@@ -21,6 +21,7 @@ import time
 
 from .compat import (
     QBrush,
+    QByteArray,
     QColor,
     QFont,
     QFontMetricsF,
@@ -35,6 +36,7 @@ from .compat import (
     QRadialGradient,
     QRect,
     QRectF,
+    QSvgRenderer,
     QtCompat as Qt,
     QTransform,
 )
@@ -175,6 +177,58 @@ def _image_input(params, data_key, path_key, required=True):
     if not image.load(full):
         raise OpError("Could not decode {0} as an image".format(full))
     return image.convertToFormat(QImage.Format_ARGB32)
+
+
+MAX_SVG_BYTES = 8 * 1024 * 1024
+
+
+def _svg_input(cmd, index):
+    """A QSvgRenderer for inline ``svg`` markup or an absolute ``path``."""
+    if QSvgRenderer is None:
+        raise OpError("This Krita build has no QtSvg module, so svg commands "
+                      "are unavailable.", kind="unsupported")
+    markup = cmd.get("svg")
+    path = cmd.get("path")
+    if (markup is None) == (path is None):
+        raise OpError("commands[{0}] (svg) needs exactly one of `svg` markup or `path`"
+                      .format(index))
+    if path is not None:
+        if not isinstance(path, str) or not os.path.isabs(os.path.expanduser(path.strip())):
+            raise OpError("path must be an absolute file path")
+        full = _abspath(path)
+        if not full.lower().endswith(".svg"):
+            raise OpError("svg path must name a .svg file")
+        if not os.path.isfile(full):
+            raise OpError("path does not exist: {0}".format(full), kind="not_found")
+        if os.path.getsize(full) > MAX_SVG_BYTES:
+            raise OpError("svg file is larger than 8 MiB", kind="resource_limit")
+        with open(full, "rb") as handle:
+            data = handle.read()
+    else:
+        if not isinstance(markup, str) or not markup.strip():
+            raise OpError("commands[{0}] (svg) `svg` must be SVG markup".format(index))
+        data = markup.encode("utf-8")
+        if len(data) > MAX_SVG_BYTES:
+            raise OpError("svg markup is larger than 8 MiB", kind="resource_limit")
+    renderer = QSvgRenderer(QByteArray(data))
+    if not renderer.isValid():
+        raise OpError("commands[{0}] (svg) could not be parsed as SVG".format(index))
+    return renderer
+
+
+def _natural_size(cmd, width, height):
+    """w and h; natural size if both are unset, aspect kept if one is."""
+    w = cmd.get("w", cmd.get("width"))
+    h = cmd.get("h", cmd.get("height"))
+    if w is None and h is None:
+        return float(width), float(height)
+    if h is None:
+        w = _as_float(w, "w")
+        return w, w * height / float(max(1, width))
+    if w is None:
+        h = _as_float(h, "h")
+        return h * width / float(max(1, height)), h
+    return _as_float(w, "w"), _as_float(h, "h")
 
 
 def _ensure_parent_dir(path):
@@ -963,6 +1017,39 @@ _LAYER_TYPES = {
 }
 
 
+_FILE_SCALING = {"none": "None", "to_image_size": "ImageToSize", "to_ppi": "ImageToPPI"}
+
+
+def _create_file_layer(doc, name, params):
+    path = params.get("path")
+    if not isinstance(path, str) or not os.path.isabs(os.path.expanduser(path.strip())):
+        raise OpError("path must be an absolute file path")
+    full = _abspath(path)
+    if not os.path.isfile(full):
+        raise OpError("path does not exist: {0}".format(full), kind="not_found")
+    scaling = str(_arg(params, "scaling", "none"))
+    if scaling not in _FILE_SCALING:
+        raise OpError("scaling must be one of: " + ", ".join(_FILE_SCALING))
+    if not hasattr(doc, "createFileLayer"):
+        raise OpError("This Krita build cannot create file layers.", kind="unsupported")
+    return doc.createFileLayer(name, full, _FILE_SCALING[scaling])
+
+
+def _wait_for_file_layer(doc, node, budget=5.0):
+    """File layers load on a timer; give the loader event-loop time."""
+    from .compat import QCoreApplication, QEventLoop
+    app = QCoreApplication.instance()
+    deadline = time.time() + budget
+    while True:
+        doc.waitForDone()
+        if not node.bounds().isEmpty():
+            return True
+        if app is None or time.time() > deadline:
+            return False
+        app.processEvents(QEventLoop.ExcludeUserInputEvents, 20)
+        time.sleep(0.01)
+
+
 @op("create_layer", timeout=60.0, mutates=True)
 def op_create_layer(params):
     doc = resolve_document(params.get("document"))
@@ -972,9 +1059,14 @@ def op_create_layer(params):
         raise OpError("Unknown layer type {0!r}. Supported: {1}".format(
             raw_type, ", ".join(sorted(set(_LAYER_TYPES.values())))))
     node_type = _LAYER_TYPES[raw_type]
+    linked = params.get("path") is not None
+    if linked and node_type != "filelayer":
+        raise OpError("path applies only to type filelayer")
 
     if node_type == "grouplayer":
         node = doc.createGroupLayer(name)
+    elif linked:
+        node = _create_file_layer(doc, name, params)
     else:
         node = doc.createNode(name, node_type)
     if node is None:
@@ -1002,10 +1094,17 @@ def op_create_layer(params):
     _changed, warnings = _apply_layer_properties(node, params)
     _refresh(doc)
 
+    loaded = _wait_for_file_layer(doc, node) if linked else None
     tree = layer_tree(doc, -1)
     result = {"created": True, "layer": _find_in_tree(tree, node) or
               _node_entry(node, node.name(), "", ui_index, _node_uuid(node), None),
               "layers": tree}
+    if linked:
+        result["file"] = {"path": node.path() if hasattr(node, "path") else None,
+                          "loaded": loaded}
+        if not loaded:
+            warnings.append("Krita has not finished loading the file; check the "
+                            "layer again shortly.")
     if warnings:
         result["warnings"] = warnings
     return result
@@ -1285,7 +1384,17 @@ def op_get_pixel(params):
     else:
         node = resolve_node(doc, layer_ref)
         source = node.name()
-        image = imaging.read_node_image(node, rect)
+        if node.type() == "paintlayer":
+            image = imaging.read_node_image(node, rect)
+        else:
+            # File, fill, clone, vector and group layers own no raw pixels in
+            # libkis; read what the layer renders instead.
+            imaging.require_pixel_ops(node)
+            raw = bytes(node.projectionPixelData(rect.x(), rect.y(), 1, 1))
+            if len(raw) != 4:
+                raise OpError("Krita returned no rendered pixel for layer {0!r}."
+                              .format(node.name()))
+            image = QImage(raw, 1, 1, 4, QImage.Format_ARGB32).copy()
     color = QColor(image.pixel(0, 0))
     alpha = QColor.fromRgba(image.pixel(0, 0)).alpha()
     return {
@@ -1345,7 +1454,7 @@ def _prepare(cmd, index):
         return _as_float(w, "w"), _as_float(h, "h")
 
     if kind in ("rect", "rectangle", "fill_rect", "clear", "ellipse", "circle",
-                "linear_gradient", "radial_gradient", "image"):
+                "linear_gradient", "radial_gradient", "image", "svg"):
         x = _as_float(cmd.get("x", 0), "x")
         y = _as_float(cmd.get("y", 0), "y")
         if kind == "circle":
@@ -1363,17 +1472,18 @@ def _prepare(cmd, index):
         elif kind == "image":
             source = _image_input(cmd, "data", "path")
             prep["source"] = source
-            w = cmd.get("w", cmd.get("width"))
-            h = cmd.get("h", cmd.get("height"))
-            if w is None and h is None:
-                w, h = source.width(), source.height()
-            elif h is None:
-                w = _as_float(w, "w")
-                h = w * source.height() / float(max(1, source.width()))
-            elif w is None:
-                h = _as_float(h, "h")
-                w = h * source.width() / float(max(1, source.height()))
-            prep["geom"] = (x, y, _as_float(w, "w"), _as_float(h, "h"))
+            w, h = _natural_size(cmd, source.width(), source.height())
+            prep["geom"] = (x, y, w, h)
+        elif kind == "svg":
+            renderer = _svg_input(cmd, index)
+            prep["source"] = renderer
+            natural = renderer.defaultSize()
+            if natural.isEmpty() and (cmd.get("w", cmd.get("width")) is None
+                                      or cmd.get("h", cmd.get("height")) is None):
+                raise OpError("commands[{0}] (svg) has no intrinsic size; pass w and h"
+                              .format(index))
+            w, h = _natural_size(cmd, natural.width(), natural.height())
+            prep["geom"] = (x, y, w, h)
         else:
             w, h = size_of(cmd)
             prep["geom"] = (x, y, w, h)
@@ -1396,6 +1506,12 @@ def _prepare(cmd, index):
         ys = [p[1] for p in pts]
         prep["bbox"] = rect_of(min(xs), min(ys),
                                max(xs) - min(xs), max(ys) - min(ys))
+
+    elif kind == "ink":
+        path = _ink_path(_ink_samples(cmd, prep["stroke_width"], index))
+        prep["geom"] = path
+        bounds = path.boundingRect()
+        prep["bbox"] = rect_of(bounds.x(), bounds.y(), bounds.width(), bounds.height())
 
     elif kind == "text":
         text = cmd.get("text")
@@ -1430,10 +1546,96 @@ def _prepare(cmd, index):
     else:
         raise OpError(
             "commands[{0}]: unknown draw type {1!r}. Supported: rect, "
-            "fill_rect, ellipse, circle, line, polyline, polygon, text, "
-            "clear, linear_gradient, radial_gradient, image.".format(index, kind))
+            "fill_rect, ellipse, circle, line, polyline, polygon, ink, text, "
+            "clear, linear_gradient, radial_gradient, image, svg.".format(index, kind))
 
     return prep
+
+
+MAX_INK_POINTS = 4096
+MAX_INK_SAMPLES = 32768
+
+
+def _ink_samples(cmd, default_width, index):
+    """(x, y, width) samples of an ink line, Catmull-Rom smoothed by default."""
+    raw = cmd.get("points")
+    if not isinstance(raw, (list, tuple)) or not 2 <= len(raw) <= MAX_INK_POINTS:
+        raise OpError("commands[{0}] (ink) needs 2 to {1} points"
+                      .format(index, MAX_INK_POINTS))
+    points = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) not in (2, 3):
+            raise OpError("each ink point must be [x, y] or [x, y, width], got {0!r}"
+                          .format(item))
+        width = _as_float(item[2], "width") if len(item) == 3 else default_width
+        if width < 0:
+            raise OpError("ink widths cannot be negative")
+        points.append((_as_float(item[0], "x"), _as_float(item[1], "y"), width))
+    if not _as_bool(cmd.get("smooth", True), "smooth"):
+        return points
+    out = [points[0]]
+    last = len(points) - 1
+    for i in range(last):
+        p0, p1, p2, p3 = (points[max(i - 1, 0)], points[i], points[i + 1],
+                          points[min(i + 2, last)])
+        steps = max(1, min(16, int(math.hypot(p2[0] - p1[0], p2[1] - p1[1]) / 2)))
+        for step in range(1, steps + 1):
+            t = step / float(steps)
+            t2, t3 = t * t, t * t * t
+            def spline(k):
+                return 0.5 * (2 * p1[k] + (p2[k] - p0[k]) * t
+                              + (2 * p0[k] - 5 * p1[k] + 4 * p2[k] - p3[k]) * t2
+                              + (3 * p1[k] - p0[k] - 3 * p2[k] + p3[k]) * t3)
+            # Widths interpolate linearly so they never overshoot below zero.
+            out.append((spline(0), spline(1), p1[2] + (p2[2] - p1[2]) * t))
+        if len(out) > MAX_INK_SAMPLES:
+            raise OpError("commands[{0}] (ink) is too long to smooth; split it "
+                          "or pass smooth: false".format(index))
+    return out
+
+
+def _ink_path(samples):
+    """The union of a disc at every sample and the hull between neighbours.
+
+    Every piece winds the same way, so one winding fill paints the overlaps
+    once: a translucent ink line has no darker joints.
+    """
+    path = QPainterPath()
+    path.setFillRule(Qt.WindingFill)
+
+    def add(polygon):
+        area = sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1)
+                   in zip(polygon, polygon[1:] + polygon[:1]))
+        if area < 0:
+            polygon = polygon[::-1]
+        path.addPolygon(QPolygonF([QPointF(x, y) for x, y in polygon]))
+        path.closeSubpath()
+
+    for x, y, width in samples:
+        radius = width / 2.0
+        if radius <= 0:
+            continue
+        sides = max(8, min(64, int(math.ceil(2 * math.pi * radius / 1.5))))
+        add([(x + radius * math.cos(2 * math.pi * k / sides),
+              y + radius * math.sin(2 * math.pi * k / sides)) for k in range(sides)])
+    for (x0, y0, w0), (x1, y1, w1) in zip(samples, samples[1:]):
+        r0, r1 = w0 / 2.0, w1 / 2.0
+        distance = math.hypot(x1 - x0, y1 - y0)
+        if distance <= abs(r0 - r1) or distance == 0:
+            continue  # one disc contains the other
+        ux, uy = (x1 - x0) / distance, (y1 - y0) / distance
+        # Outer tangents of the two discs: normals s*u +/- c*n.
+        sine = (r0 - r1) / distance
+        cosine = math.sqrt(max(0.0, 1 - sine * sine))
+        hull = []
+        for side in (1, -1):
+            mx = sine * ux - side * cosine * uy
+            my = sine * uy + side * cosine * ux
+            hull.append(((x0 + r0 * mx, y0 + r0 * my), (x1 + r1 * mx, y1 + r1 * my)))
+        add([hull[0][0], hull[0][1], hull[1][1], hull[1][0]])
+    if path.isEmpty():
+        raise OpError("ink line has zero width everywhere")
+    return path
 
 
 def _pen_for(cmd, prep):
@@ -1609,6 +1811,15 @@ def _run_command(painter, prep, doc_rect):
         else:
             x, y, w, h = prep["geom"]
             painter.fillRect(QRectF(x, y, w, h), brush)
+        return
+
+    if kind == "ink":
+        painter.fillPath(prep["geom"], parse_color(cmd.get("color"), "#000000"))
+        return
+
+    if kind == "svg":
+        x, y, w, h = prep["geom"]
+        prep["source"].render(painter, QRectF(x, y, w, h))
         return
 
     if kind == "image":

@@ -35,6 +35,10 @@ try:
         QTransform,
     )
     from PyQt6.QtWidgets import QMessageBox
+    try:
+        from PyQt6.QtSvg import QSvgRenderer
+    except ImportError:  # QtSvg is a separate module some builds omit.
+        QSvgRenderer = None
 
     if hasattr(QEventLoop, "ProcessEventsFlag"):
         for attr in (
@@ -65,6 +69,7 @@ try:
             "Format_RGB32",
             "Format_RGBA8888",
             "Format_Grayscale8",
+            "Format_Alpha8",
         ):
             if hasattr(QImage.Format, attr):
                 setattr(QImage, attr, getattr(QImage.Format, attr))
@@ -97,6 +102,7 @@ try:
                 getattr(Qt, "GlobalColor", None),
                 getattr(Qt, "PenCapStyle", None),
                 getattr(Qt, "PenJoinStyle", None),
+                getattr(Qt, "FillRule", None),
             ):
                 if enum_cls and hasattr(enum_cls, name):
                     return getattr(enum_cls, name)
@@ -137,5 +143,9 @@ except ImportError:
         QTransform,
     )
     from PyQt5.QtWidgets import QMessageBox
+    try:
+        from PyQt5.QtSvg import QSvgRenderer
+    except ImportError:
+        QSvgRenderer = None
 
     QtCompat = Qt

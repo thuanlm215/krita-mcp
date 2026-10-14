@@ -2,10 +2,11 @@
 
 from .. import ops as b
 from ..native_commands import get_time
+from contextlib import nullcontext
 import hashlib
 import uuid
 from ..compat import QPointF, QPainterPath
-from .common import activate, action, number, paint_layer
+from .common import MAX_PIXELS, activate, action, number, paint_layer
 
 
 def list_brushes(params):
@@ -27,17 +28,12 @@ def list_brushes(params):
                     "not target layer editability. Use list_capabilities kind workflow for target guards."}
 
 
-def draw_brush(params):
-    from krita import ManagedColor
-    doc = b.resolve_document(params.get("document"))
-    node = paint_layer(doc, params.get("layer"), allow_animated=True)
-    if not hasattr(node, "paintLine"):
-        raise b.OpError("This Krita build lacks native painting APIs.",
-                        kind="unsupported")
-    raw = b._req(params, "points")
+MAX_STROKES = 64
+
+
+def _stroke_points(raw, doc, clamp, where):
     if not isinstance(raw, list) or not 2 <= len(raw) <= 128:
-        raise b.OpError("points must contain 2 to 128 {x,y,pressure} objects")
-    clamp = b._as_bool(b._arg(params, "clamp", False), "clamp")
+        raise b.OpError(where + " must contain 2 to 128 {x,y,pressure} objects")
     points = []
     for index, point in enumerate(raw):
         if not isinstance(point, dict):
@@ -46,9 +42,9 @@ def draw_brush(params):
         if clamp:
             x, y = min(max(x, 0), doc.width()-1), min(max(y, 0), doc.height()-1)
         elif not (0 <= x <= doc.width()-1 and 0 <= y <= doc.height()-1):
-            raise b.OpError("points[{0}] ({1:g}, {2:g}) is outside the {3}x{4} canvas; "
+            raise b.OpError("{0}[{1}] ({2:g}, {3:g}) is outside the {4}x{5} canvas; "
                             "pass clamp: true to pull it onto the edge"
-                            .format(index, x, y, doc.width(), doc.height()))
+                            .format(where, index, x, y, doc.width(), doc.height()))
         points.append((x, y,
                        number(b._arg(point, "pressure", 1), "pressure", 0, 1),
                        number(b._arg(point, "tilt_x", 0), "tilt_x", -60, 60),
@@ -56,17 +52,53 @@ def draw_brush(params):
                        number(b._arg(point, "timestamp_ms", len(points)*16), "timestamp_ms", 0, 1e8)))
     if any(end[5] <= start[5] for start,end in zip(points,points[1:])):
         raise b.OpError("Stroke timestamps must increase")
+    return points
+
+
+def _stroke_settings(spec, defaults):
+    """Size, opacity, colour and eraser for one stroke; unset keys inherit."""
+    def setting(key, default):
+        return b._arg(spec, key, b._arg(defaults, key, default))
+    return {"size": number(setting("size", 20), "size", 0.1, 2048),
+            "opacity": number(setting("opacity", 1), "opacity", 0, 1),
+            "erase": b._as_bool(setting("erase", False), "erase"),
+            "color": b.parse_color(setting("color", "#000000"))}
+
+
+def draw_brush(params):
+    from krita import ManagedColor
+    from ..native_commands import STATE, group
+    doc = b.resolve_document(params.get("document"))
+    node = paint_layer(doc, params.get("layer"), allow_animated=True)
+    if not hasattr(node, "paintLine"):
+        raise b.OpError("This Krita build lacks native painting APIs.",
+                        kind="unsupported")
+    clamp = b._as_bool(b._arg(params, "clamp", False), "clamp")
+    raw_strokes = params.get("strokes")
+    if raw_strokes is not None:
+        if params.get("points") is not None:
+            raise b.OpError("Give points or strokes, not both")
+        if not isinstance(raw_strokes, list) or not 1 <= len(raw_strokes) <= MAX_STROKES:
+            raise b.OpError("strokes must contain 1 to {0} stroke objects".format(MAX_STROKES))
+        jobs = []
+        for index, spec in enumerate(raw_strokes):
+            if not isinstance(spec, dict):
+                raise b.OpError("strokes[{0}] must be an object with points".format(index))
+            where = "strokes[{0}].points".format(index)
+            jobs.append((_stroke_points(b._req(spec, "points"), doc, clamp, where),
+                         _stroke_settings(spec, params)))
+    else:
+        if params.get("points") is None:
+            raise b.OpError("draw_brush needs points, or strokes for several strokes")
+        jobs = [(_stroke_points(params["points"], doc, clamp, "points"),
+                 _stroke_settings(params, {}))]
     mode = str(b._arg(params, "mode", "pressure"))
     if mode not in ("pressure", "continuous", "segments", "path"):
         raise b.OpError("mode must be continuous, pressure, segments or path")
-    if mode == "path" and any(p[2] != 1 for p in points):
+    if mode == "path" and any(p[2] != 1 for points, _ in jobs for p in points):
         raise b.OpError("Native paintPath cannot accept pressure; use mode pressure")
     if mode == "path" and not hasattr(node, "paintPath"):
         raise b.OpError("This Krita build lacks paintPath.", kind="unsupported")
-    size = number(b._arg(params, "size", 20), "size", 0.1, 2048)
-    opacity = number(b._arg(params, "opacity", 1), "opacity", 0, 1)
-    erase = b._as_bool(b._arg(params, "erase", False), "erase")
-    color = b.parse_color(b._arg(params, "color", "#000000"))
     preset_name = params.get("preset")
     preset = None
     if preset_name is not None:
@@ -74,6 +106,10 @@ def draw_brush(params):
         if preset is None:
             raise b.OpError("Unknown preset; use list_brushes for exact names.",
                             kind="not_found")
+    # Several strokes share one Undo entry. Inside an outer group (edit_batch,
+    # paint_stroke) that group already owns history and rollback.
+    nested = bool(STATE.get("group_depth"))
+    grouped = len(jobs) > 1 and not nested
     view = activate(doc, node)
     state = (view.currentBrushPreset(), view.brushSize(),
              view.paintingOpacity(), view.foregroundColor(), view.eraserMode())
@@ -81,39 +117,42 @@ def draw_brush(params):
     try:
         if preset is not None:
             view.setCurrentBrushPreset(preset)
-        view.setBrushSize(size)
-        view.setPaintingOpacity(opacity)
-        view.setForeGroundColor(ManagedColor.fromQColor(color, view.canvas()))
-        view.setEraserMode(erase)
-        if node.paintAbility() != "PAINT":
-            raise b.OpError("Krita reports this layer cannot be painted.")
-        if mode == "path":
-            path = QPainterPath(QPointF(points[0][0], points[0][1]))
-            for x, y, *_ in points[1:]:
-                path.lineTo(x, y)
-            node.paintPath(path)
-            doc.waitForDone()
-            completed = 1
-        elif mode in ("pressure", "continuous"):
-            from ..native_commands import stroke
-            stroke(node, points)
-            doc.waitForDone()
-            completed = 1
-        else:
-            for start, end in zip(points, points[1:]):
-                # Krita 6.0's Python binding uses QPoint; newer bindings use
-                # QPointF. toPoint() supplies the compatible integral form.
-                node.paintLine(QPointF(start[0], start[1]).toPoint(),
-                               QPointF(end[0], end[1]).toPoint(),
-                               start[2], end[2])
-                doc.waitForDone()
-                completed += 1
+        with group(doc, "MCP brush strokes") if grouped else nullcontext():
+            for points, settings in jobs:
+                view.setBrushSize(settings["size"])
+                view.setPaintingOpacity(settings["opacity"])
+                view.setForeGroundColor(ManagedColor.fromQColor(settings["color"], view.canvas()))
+                view.setEraserMode(settings["erase"])
+                if node.paintAbility() != "PAINT":
+                    raise b.OpError("Krita reports this layer cannot be painted.")
+                if mode == "path":
+                    path = QPainterPath(QPointF(points[0][0], points[0][1]))
+                    for x, y, *_ in points[1:]:
+                        path.lineTo(x, y)
+                    node.paintPath(path)
+                    doc.waitForDone()
+                    completed += 1
+                elif mode in ("pressure", "continuous"):
+                    from ..native_commands import stroke
+                    stroke(node, points)
+                    doc.waitForDone()
+                    completed += 1
+                else:
+                    for start, end in zip(points, points[1:]):
+                        # Krita 6.0's Python binding uses QPoint; newer bindings use
+                        # QPointF. toPoint() supplies the compatible integral form.
+                        node.paintLine(QPointF(start[0], start[1]).toPoint(),
+                                       QPointF(end[0], end[1]).toPoint(),
+                                       start[2], end[2])
+                        doc.waitForDone()
+                        completed += 1
         used_preset = view.currentBrushPreset().name()
     except Exception:
         # Every completed native segment has its own history entry. Revert
-        # only those entries if a later segment fails.
-        for _ in range(completed):
-            action(doc, "edit_undo")
+        # only those entries if a later segment fails. A group reverts itself.
+        if not grouped and not nested:
+            for _ in range(completed):
+                action(doc, "edit_undo")
         raise
     finally:
         view.setCurrentBrushPreset(state[0])
@@ -123,11 +162,13 @@ def draw_brush(params):
         view.setEraserMode(state[4])
     b._refresh(doc)
     return {"layer": node.name(), "native": True, "mode": mode,
-            "preset": used_preset, "undoable": True, "undo_steps": completed,
+            "preset": used_preset, "undoable": True,
+            "undo_steps": 1 if grouped else completed, "strokes": len(jobs),
             "selection_respected": True,
             "note": ("Pressure/continuous mode uses one persistent native painting "
                      "stroke with pressure, tilt and time samples. Segments mode "
-                     "keeps the legacy independent line calls. Path mode uses pressure 1.")}
+                     "keeps the legacy independent line calls. Path mode uses pressure 1. "
+                     "Several strokes form one Undo entry.")}
 
 
 def history(params, redo=False):
@@ -173,7 +214,7 @@ def plan_stroke(params):
         planned = plan(spec)
     except PlanError as exc:
         raise b.OpError(str(exc))
-    doc,node = resolve(spec['target'],allow_frame=True)
+    doc,node = resolve(spec['target'],allow_frame=True,canvas_limit=MAX_PIXELS)
     if not b._krita().resources('preset').get(spec['preset']):
         raise b.OpError('Exact preset resource not found',kind='not_found')
     for p in planned['points']:
@@ -185,13 +226,30 @@ def plan_stroke(params):
     return planned
 
 
+def _changed_spans(before, after, width):
+    """Per changed row, the pixel-index span that holds its changed pixels.
+
+    Rows compare at C speed, and the XOR of two row integers finds the first
+    and last differing byte, so a large canvas is never walked per pixel.
+    """
+    row = width * 4
+    for top in range(0, len(before), row):
+        old, new = before[top:top + row], after[top:top + row]
+        if old == new:
+            continue
+        diff = int.from_bytes(old, "big") ^ int.from_bytes(new, "big")
+        first = (row * 8 - diff.bit_length()) // 8
+        last = row - 1 - ((diff & -diff).bit_length() - 1) // 8
+        yield (top + first) // 4, (top + last) // 4 + 1
+
+
 def paint_stroke(params):
     from ..targeting import resolve
     from ..native_commands import set_time,frames,group,write_raw
     from ..compat import QRect
     planned = plan_stroke(params)
     spec = params['spec']
-    doc,node = resolve(spec['target'],allow_frame=True)
+    doc,node = resolve(spec['target'],allow_frame=True,canvas_limit=MAX_PIXELS)
     scope = spec['target']['scope']
     if scope['kind'] == 'frame':
         if scope['exposure_policy'] != 'existing_keyframe' or scope['time'] not in frames(node):
@@ -214,14 +272,16 @@ def paint_stroke(params):
             # protected bytes inside the same native history macro.
             if mask is not None:
                 protected = bytearray(after)
-                for i,weight in enumerate(mask):
-                    if not weight:protected[i*4:i*4+4]=before[i*4:i*4+4]
+                for start,end in _changed_spans(before,after,doc.width()):
+                    for i in range(start,end):
+                        if not mask[i]:protected[i*4:i*4+4]=before[i*4:i*4+4]
                 if bytes(protected) != after:
                     write_raw(doc,node,QRect(0,0,doc.width(),doc.height()),bytes(protected),'MCP protected selection bytes')
                 after=bytes(protected)
     finally:
         if scope['kind'] == 'frame': set_time(doc,current)
-    changed = [i//4 for i in range(0,len(before),4) if before[i:i+4] != after[i:i+4]]
+    changed = [i for start,end in _changed_spans(before,after,doc.width())
+               for i in range(start,end) if before[i*4:i*4+4] != after[i*4:i*4+4]]
     xs = [i%doc.width() for i in changed];ys = [i//doc.width() for i in changed]
     result.update(operation_id=uuid.uuid4().hex,status='applied',target=spec['target'],
                   stroke_id=spec['stroke_id'],planned_points=planned['point_count'],

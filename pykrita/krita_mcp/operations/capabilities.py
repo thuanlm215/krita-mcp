@@ -48,12 +48,13 @@ def workflow_capabilities(params):
 
     native = (helper["available"], helper.get("reason") or "Native helper unavailable")
 
-    def pilot():
-        from ..targeting import resolve
+    def pilot(canvas_limit=None):
+        from ..targeting import MAX_WORK_PIXELS, resolve
         from ..native_commands import get_time
         scope={'kind':'frame','time':get_time(doc),
                'exposure_policy':'existing_keyframe'} if node.animated() else {'kind':'static'}
-        resolve({'document':b._doc_summary(doc)['session_id'],'layer':'uuid:'+b._node_uuid(node),'scope':scope},allow_frame=True)
+        resolve({'document':b._doc_summary(doc)['session_id'],'layer':'uuid:'+b._node_uuid(node),'scope':scope},
+                allow_frame=True,canvas_limit=canvas_limit or MAX_WORK_PIXELS)
 
     def frame_pilot():
         pilot()
@@ -99,7 +100,7 @@ def workflow_capabilities(params):
         "mask_layer": support([native, (api["transparency_mask"], "Transparency-mask API absent")], mask_target),
         "animation": support([native], animation_target),
         "warp_layer": support([native, (api["clone_document"], "Document clone previews absent")], warp_target),
-        'structured_stroke':support([native],pilot),
+        'structured_stroke':support([native],lambda:pilot(MAX_PIXELS)),
         'bounded_repair':support([native],pilot),
         'exact_frame_repair':support([native],frame_pilot),
         'color_feedback':support([native],pilot),
@@ -122,7 +123,7 @@ def workflow_capabilities(params):
                 "mask_layer": {"kind": "transparency mask only; not arbitrary filter/selection/transform mask editing"},
                 "animation": {"kind": "raster keyframes only; no skeletal rig or animated transform masks"},
                 'structured_stroke':{'schema_version':1,'geometry':['polyline','cubic'],'profile':'sRGB-elle-V2-srgbtrc.icc',
-                    'tilt':'zero only','pixel_exact_replay':False},
+                    'tilt':'zero only','pixel_exact_replay':False,'canvas_pixels':MAX_PIXELS},
                 'bounded_repair':{'candidates':3,'ttl_seconds':600,'active_tokens':8,'retained_tokens':32,
                     'bytes':64*1024*1024,'source_extent_pixels':1048576,'commit':'frozen bytes; idempotent session outcome'},
                 'exact_frame_repair':{'policies':['existing_keyframe','one_sample'],'regions':['roi','whole_frame'],
