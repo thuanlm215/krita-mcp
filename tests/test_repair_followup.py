@@ -8,8 +8,7 @@ from tests.test_mcp import _image_of
 import json
 import os
 from pathlib import Path
-import tests.test_correction
-import tests.test_frame_repair
+from tests import test_correction, test_frame_repair
 from tests.preview_payload import preview_content
 
 

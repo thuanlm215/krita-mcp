@@ -17,6 +17,9 @@ import tempfile
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
+# Run as scripts/run_isolated_tests.py, sys.path starts at scripts/. The
+# graceful quit below imports the server from the checkout root.
+sys.path.insert(0, str(ROOT))
 
 
 def native_diagnostics(output):
