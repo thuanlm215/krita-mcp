@@ -45,11 +45,27 @@ Sequences for extraction, brushes, warp, animation, and repair are in [workflows
 
 `draw` paints a list of commands, in order, onto an RGBA/8-bit paint layer:
 
-`fill_rect`, `rect` (optional corner radius), `ellipse`, `circle`, `line`, `polyline`, `polygon`, `text`, `linear_gradient`, `radial_gradient`, `image` (base64 PNG), and `clear`.
+`fill_rect`, `rect` (optional corner radius), `ellipse`, `circle`, `line`, `polyline`, `polygon`, `text`, `linear_gradient`, `radial_gradient`, `image`, and `clear`.
 
 The active selection constrains these commands, including feathered alpha. Colours accept `#rrggbb`, `#rrggbbaa`, SVG names, or `[r, g, b, a]`.
 
 Geometry uses `w` and `h`. Outline thickness is `stroke_width`. Only the union of affected pixels is read, painted, and written back.
+
+**Gradients.** Both take `stops`, such as `[[0, "#fff"], [1, "#fff0"]]`. `linear_gradient` fills its `x, y, w, h` box along `direction` (`horizontal`, `vertical`, `diagonal`), or along explicit `x1, y1, x2, y2`. `radial_gradient` given `cx, cy` and `radius` (or `rx` and `ry`, with `angle` in degrees clockwise) fills only that ellipse, and the last stop lands on its edge. Given a box instead, it fills the ellipse inscribed in the box, so a wide box gives a soft oval, not a cut-off circle.
+
+**Bitmaps.** `image` takes base64 PNG `data` or an absolute `path` to a PNG, JPEG, WebP, or BMP file of up to 48 MiB. With neither `w` nor `h` the image keeps its natural size; with one of them it keeps its aspect ratio.
+
+**Alpha lock.** `create_layer` and `set_layer` take `alpha_locked` and `inherit_alpha`. On an alpha-locked layer, `draw` and `draw_brush` change colour only where pixels already exist, and `draw` skips `clear` commands. Layer listings show both flags only when they are set.
+
+**Native strokes.** `draw_brush` rejects a point outside the canvas and names it. Pass `clamp: true` to pull such points onto the nearest edge.
+
+## Files instead of inline data
+
+Every tool takes `params_file`: an absolute path to a `.json` file holding an object of that tool's arguments. Inline arguments override the file. Use it for long command lists, stroke points, or batch edits, so they do not travel through the conversation. Required arguments may come from either place, so tool schemas list none; the server checks them after merging.
+
+Tools that return a picture (`get_image`, `transform_layer`, `warp_layer`, `preview_changes`, `compare_images`, `inspect_repair`, `animation_review`) take `save_path`, an absolute `.png` path. The image is written there and the reply carries only the metadata and `saved_to`.
+
+Image inputs take a file path beside their base64 form: `texture_patch` `data_path` and `mask_path`, and `select_content` (mask mode) and `mask_layer` (image mode) `data_path`. The client and Krita share a filesystem, because the bridge listens on loopback only. Repair candidates still take bounded base64 data.
 
 ## Addressing layers
 

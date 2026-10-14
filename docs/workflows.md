@@ -94,7 +94,7 @@ Preview matches apply for the same unchanged source and selection, and it does n
 
 ## Texture, masks, and review
 
-- `texture_patch` takes `data` (base64 PNG) or `source_layer`, an optional `source_region`, a destination `region`, `opacity`, and optional `mask_data`. An explicit mask matches the destination size. `mask_channel` is `alpha` or `luminance`.
+- `texture_patch` takes `data` (base64 PNG), `data_path` (an absolute image path), or `source_layer`, an optional `source_region`, a destination `region`, `opacity`, and optional `mask_data` or `mask_path`. An explicit mask matches the destination size. `mask_channel` is `alpha` or `luminance`.
 - `clone_stamp` takes a source anchor, destination `points`, `size`, `softness`, and `opacity`. Pressure weights opacity. The source is frozen before the stroke. This is sampled compositing. Use `draw_brush` when the preset itself must paint.
 - `mask_layer` builds a transparency mask from the selection, a `fill`, or a canvas-sized image.
 - `bake_layer` renders the full layer projection, including off-canvas pixels, into a new paint layer and hides the source.

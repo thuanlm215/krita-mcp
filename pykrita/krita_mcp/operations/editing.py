@@ -77,7 +77,7 @@ def mask_layer(params):
         value=int(number(b._arg(params,"value",255),"value",0,255))
         data=bytes([value])*(doc.width()*doc.height())
     elif mode=="image":
-        image=b.imaging.png_b64_to_qimage(b._req(params,"data"))
+        image=b._image_input(params,"data","data_path")
         if image.size()!=canvas.size():raise b.OpError("Mask image must match canvas size")
         channel=str(b._arg(params,"channel","alpha"))
         raw=b.imaging.image_bytes(image)

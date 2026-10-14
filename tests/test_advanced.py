@@ -7,7 +7,7 @@ import struct
 import unittest
 import zlib
 
-from tests.test_mcp import _image_of
+from tests.test_mcp import _image_of, _text_of
 import tests.test_workflow as workflow
 
 
@@ -227,5 +227,120 @@ class AdvancedTests(unittest.TestCase):
         reopened=self.call('open_document',path=path);self.doc=reopened['index']
         r=self.call('animation_frame',layer='Paint');self.assertEqual(r['keyframes'],[0,4,8]);self.assertEqual(r['fps'],12)
 
+
+    def failed(self,tool,**args):
+        args.setdefault('document',self.doc)
+        result=self.client.call(tool,args)
+        self.assertTrue(result.get('isError'),tool)
+        return _text_of(result)
+
+    def png_file(self,name,width,height,color):
+        path=Path(self.temp.name)/self.doc/name
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(base64.b64decode(png(width,height,color)))
+        return str(path)
+
+    def test_radial_gradient_ellipses_have_no_hard_edge(self):
+        fade=[[0,[255,0,0,255]],[1,[255,0,0,0]]]
+        self.call('create_layer',name='Box');self.call('create_layer',name='Turned')
+        self.call('draw',layer='Paint',commands=[{'type':'radial_gradient','cx':64,'cy':64,
+                  'rx':40,'ry':20,'stops':fade}])
+        alpha=lambda x,y,layer='Paint':self.pixel(x,y,layer)[3]
+        self.assertGreater(alpha(64,64),245)
+        self.assertLess(abs(alpha(100,64)-alpha(64,82)),8)
+        self.assertLess(alpha(100,64),40);self.assertEqual(alpha(94,82),0)
+        # The old box form now fills its inscribed ellipse, not a circle.
+        self.call('draw',layer='Box',commands=[{'type':'radial_gradient','x':0,'y':32,
+                  'w':128,'h':64,'stops':fade}])
+        self.assertGreater(alpha(64,64,'Box'),245);self.assertEqual(alpha(1,33,'Box'),0)
+        self.assertLess(alpha(126,64,'Box'),30);self.assertLess(alpha(64,94,'Box'),40)
+        # angle turns the long axis clockwise: +45 points it down-right.
+        self.call('draw',layer='Turned',commands=[{'type':'radial_gradient','cx':64,'cy':64,
+                  'rx':40,'ry':20,'angle':45,'stops':fade}])
+        self.assertTrue(40<alpha(85,85,'Turned')<90);self.assertEqual(alpha(85,43,'Turned'),0)
+        self.assertIn('radius',self.failed('draw',layer='Paint',commands=[
+            {'type':'radial_gradient','cx':10,'cy':10,'stops':fade}]))
+
+    def test_linear_gradient_endpoints(self):
+        self.call('draw',layer='Paint',commands=[{'type':'linear_gradient','x':0,'y':0,
+                  'w':128,'h':128,'x1':0,'y1':20,'x2':0,'y2':100,
+                  'stops':[[0,'red'],[1,'blue']]}])
+        self.assertEqual(self.pixel(64,10),[255,0,0,255])
+        self.assertEqual(self.pixel(64,110),[0,0,255,255])
+        middle=self.pixel(5,60);self.assertEqual(middle,self.pixel(120,60))
+        self.assertTrue(100<middle[0]<155)
+        self.assertIn('x1, y1, x2, y2',self.failed('draw',layer='Paint',commands=[
+            {'type':'linear_gradient','w':10,'h':10,'x1':0,'stops':[[0,'red'],[1,'blue']]}]))
+
+    def test_images_and_masks_from_files(self):
+        green=self.png_file('green.png',6,4,[0,255,0,255])
+        self.call('draw',layer='Paint',commands=[{'type':'image','x':10,'y':10,'path':green},
+                                                 {'type':'image','x':40,'y':40,'w':12,'path':green}])
+        self.assertEqual(self.pixel(15,13),[0,255,0,255])
+        self.assertEqual(self.pixel(16,13)[3],0);self.assertEqual(self.pixel(15,14)[3],0)
+        self.assertEqual(self.pixel(51,47),[0,255,0,255])
+        self.assertEqual(self.pixel(52,47)[3],0);self.assertEqual(self.pixel(51,48)[3],0)
+        image=lambda **extra:[dict({'type':'image','x':0,'y':0},**extra)]
+        self.assertIn('absolute',self.failed('draw',layer='Paint',commands=image(path='green.png')))
+        self.assertIn('not both',self.failed('draw',layer='Paint',commands=image(
+            path=green,data=png(1,1,[0,0,0,255]))))
+        self.assertIn('does not exist',self.failed('draw',layer='Paint',commands=image(
+            path=str(Path(self.temp.name)/'missing.png'))))
+
+        self.fill('blue')
+        r=self.call('texture_patch',layer='Paint',data_path=self.png_file('red.png',20,20,[255,0,0,255]),
+                    region={'x':0,'y':0,'width':20,'height':20},
+                    mask_path=self.png_file('half.png',20,20,[0,0,0,128]))
+        self.assertEqual(r['undo_steps'],1);self.assertEqual(self.pixel(5,5),[128,0,127,255])
+        self.call('select_content',mode='mask',data_path=self.png_file('sel.png',8,8,[0,0,0,128]),x=40,y=40)
+        self.assertEqual(list(bytes.fromhex(self.fixture('selection',rect=[42,42,1,1]))),[128])
+        self.call('set_selection',mode='none')
+        self.call('mask_layer',layer='Paint',mode='image',
+                  data_path=self.png_file('hide.png',128,128,[0,0,0,0]))
+        self.assertEqual(bytes.fromhex(self.fixture('pixels',projection=True,rect=[50,50,1,1]))[3],0)
+
+    def test_alpha_lock_and_inherit_alpha(self):
+        self.draw_rect(10,10,20,20,[255,0,0,128])
+        r=self.call('set_layer',layer='Paint',alpha_locked=True)
+        self.assertIn('alpha_locked',r['changed']);self.assertTrue(r['layer']['alpha_locked'])
+        r=self.fill('blue');self.assertTrue(r['alpha_locked'])
+        painted=self.pixel(15,15);self.assertEqual(painted[3],128)
+        self.assertLess(painted[0],3);self.assertGreater(painted[2],252)
+        self.assertEqual(self.pixel(50,50),[0,0,0,0])
+        r=self.call('draw',layer='Paint',commands=[{'type':'clear','x':0,'y':0,'w':128,'h':128}])
+        self.assertEqual((r['drawn'],r['skipped_clear']),(0,1));self.assertEqual(self.pixel(15,15),painted)
+        # Krita's own brush engine honours the lock as well. It may leave
+        # colour beneath zero alpha, which never shows.
+        self.call('draw_brush',layer='Paint',preset='b) Basic-5 Size',color='lime',size=10,
+                  points=[{'x':5,'y':20},{'x':60,'y':20}])
+        self.assertEqual(self.pixel(50,20)[3],0)
+        brushed=self.pixel(20,20);self.assertEqual(brushed[3],128);self.assertGreater(brushed[1],200)
+        self.call('create_layer',name='Clip',inherit_alpha=True)
+        self.assertTrue(next(n for n in self.call('inspect_document')['layers']
+                             if n['name']=='Clip')['inherit_alpha'])
+        self.fill('lime',layer='Clip')
+        merged=lambda x,y:bytes.fromhex(self.fixture('pixels',merged=True,rect=[x,y,1,1]))[3]
+        self.assertEqual(merged(50,50),0);self.assertEqual(merged(15,15),128)
+
+    def test_draw_brush_clamps_or_names_the_bad_point(self):
+        points=[{'x':-20,'y':64},{'x':150,'y':64}]
+        message=self.failed('draw_brush',layer='Paint',points=points)
+        self.assertIn('points[0] (-20, 64) is outside the 128x128 canvas',message)
+        self.assertIn('clamp: true',message)
+        self.call('draw_brush',layer='Paint',preset='b) Basic-5 Size',color='blue',size=10,
+                  clamp=True,points=points)
+        self.assertGreater(self.pixel(0,64)[3],0);self.assertGreater(self.pixel(127,64)[3],0)
+
+    def test_params_file_and_save_path(self):
+        args=Path(self.temp.name)/(self.doc+'-draw.json')
+        args.write_text(json.dumps({'layer':'Paint','commands':[
+            {'type':'fill_rect','x':0,'y':0,'w':10,'h':10,'color':'red'}]}))
+        self.call('draw',params_file=str(args))
+        self.assertEqual(self.pixel(5,5),[255,0,0,255])
+        out=Path(self.temp.name)/self.doc/'shots'/'view.png'
+        payload,result=self.client.ok('get_image',{'document':self.doc,'save_path':str(out)})
+        self.assertEqual(payload['saved_to'],str(out))
+        self.assertEqual([block['type'] for block in result['content']],['text'])
+        self.assertEqual(out.read_bytes()[:8],b'\x89PNG\r\n\x1a\n')
 
 if __name__=='__main__':unittest.main(verbosity=2)

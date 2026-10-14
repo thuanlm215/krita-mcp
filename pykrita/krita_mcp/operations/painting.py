@@ -37,12 +37,19 @@ def draw_brush(params):
     raw = b._req(params, "points")
     if not isinstance(raw, list) or not 2 <= len(raw) <= 128:
         raise b.OpError("points must contain 2 to 128 {x,y,pressure} objects")
+    clamp = b._as_bool(b._arg(params, "clamp", False), "clamp")
     points = []
-    for point in raw:
+    for index, point in enumerate(raw):
         if not isinstance(point, dict):
             raise b.OpError("Each point must be an {x,y,pressure} object")
-        points.append((number(b._req(point, "x"), "x", 0, doc.width()-1),
-                       number(b._req(point, "y"), "y", 0, doc.height()-1),
+        x, y = number(b._req(point, "x"), "x"), number(b._req(point, "y"), "y")
+        if clamp:
+            x, y = min(max(x, 0), doc.width()-1), min(max(y, 0), doc.height()-1)
+        elif not (0 <= x <= doc.width()-1 and 0 <= y <= doc.height()-1):
+            raise b.OpError("points[{0}] ({1:g}, {2:g}) is outside the {3}x{4} canvas; "
+                            "pass clamp: true to pull it onto the edge"
+                            .format(index, x, y, doc.width(), doc.height()))
+        points.append((x, y,
                        number(b._arg(point, "pressure", 1), "pressure", 0, 1),
                        number(b._arg(point, "tilt_x", 0), "tilt_x", -60, 60),
                        number(b._arg(point, "tilt_y", 0), "tilt_y", -60, 60),

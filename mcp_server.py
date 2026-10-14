@@ -273,10 +273,12 @@ DRAW_COMMAND = {
         "close\n"
         "- text: x, y, text, size (pixels), color, font, bold, italic, "
         "anchor (top-left|baseline|center); \\n starts a new line\n"
-        "- linear_gradient: x, y, w, h, stops [[0,\"#000\"],[1,\"#fff\"]], "
-        "direction (horizontal|vertical|diagonal)\n"
-        "- radial_gradient: x, y, w, h, stops\n"
-        "- image: x, y, w, h, data (base64 PNG/JPEG) to paste a bitmap\n"
+        "- linear_gradient: x, y, w, h (fill box), stops [[0,\"#000\"],[1,\"#fff\"]], "
+        "direction (horizontal|vertical|diagonal), or x1, y1, x2, y2 for any axis\n"
+        "- radial_gradient: stops plus either x, y, w, h (ellipse inscribed in "
+        "the box) or cx, cy, radius (or rx, ry, angle) to fill only that ellipse\n"
+        "- image: x, y, data (base64 PNG/JPEG) or path (absolute file path); "
+        "w, h optional, natural size if both omitted\n"
         "- clear: x, y, w, h to erase back to transparency\n"
         "Colours accept #rrggbb, #rrggbbaa, SVG names, or [r,g,b,a]."
     ),
@@ -293,6 +295,8 @@ DRAW_COMMAND = {
         "x2": {"type": "number"}, "y2": {"type": "number"},
         "cx": {"type": "number"}, "cy": {"type": "number"},
         "radius": {"type": "number"},
+        "rx": {"type": "number"}, "ry": {"type": "number"},
+        "angle": {"type": "number", "description": "Degrees, clockwise."},
         "color": {"type": ["string", "array"]},
         "fill": {"type": ["string", "array"]},
         "stroke_width": {"type": "number", "default": 1},
@@ -313,25 +317,61 @@ DRAW_COMMAND = {
                       "enum": ["horizontal", "vertical", "diagonal"]},
         "stops": {"type": "array", "items": {"type": "array"}},
         "data": {"type": "string", "description": "base64 image bytes"},
+        "path": {"type": "string",
+                 "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data"},
     },
     "required": ["type"],
 }
 
 
+ALPHA_LOCKED_PROP = {
+    "type": "boolean",
+    "description": "Paint changes colour only; transparency stays as it is.",
+}
+
+INHERIT_ALPHA_PROP = {
+    "type": "boolean",
+    "description": "Clip this layer to the combined alpha of the layers below it.",
+}
+
+PARAMS_FILE_PROP = {
+    "type": "string",
+    "description": ("Absolute path to a .json file holding an object of this "
+                    "tool's arguments; inline arguments override it. Keeps "
+                    "large commands, points or edits out of the conversation."),
+}
+
+SAVE_PATH_PROP = {
+    "type": "string",
+    "description": ("Absolute .png path. The image is written there and left "
+                    "out of the reply; the text result names the file."),
+}
+
+
 def tool(name, description, properties, required=None, op=None, image=False,
          transform=None):
+    properties = dict(properties, params_file=PARAMS_FILE_PROP)
+    if image:
+        properties["save_path"] = SAVE_PATH_PROP
+    required = list(required or [])
+    # Required arguments may arrive in params_file, so the server checks them
+    # after merging rather than letting a client reject the call.
+    if required:
+        description = "{0} Required, inline or in params_file: {1}.".format(
+            description, ", ".join(required))
     return {
         "name": name,
         "description": description,
         "inputSchema": {
             "type": "object",
             "properties": properties,
-            "required": required or [],
+            "required": [],
             "additionalProperties": False,
         },
         "_op": op or name,
         "_image": image,
         "_transform": transform,
+        "_required": required,
     }
 
 
@@ -502,11 +542,14 @@ TOOLS = [
           "opacity": {"type": "number"},
           "blending_mode": {"type": "string"},
           "visible": {"type": "boolean"},
-          "locked": {"type": "boolean"}}),
+          "locked": {"type": "boolean"},
+          "alpha_locked": ALPHA_LOCKED_PROP,
+          "inherit_alpha": INHERIT_ALPHA_PROP}),
 
     tool("set_layer",
          "Change a layer's properties: rename it, set opacity (0-255, or 0-1), "
-         "blending mode, visibility, lock, and optionally make it active.",
+         "blending mode, visibility, lock, alpha lock, inherit alpha (clip to "
+         "the layers below), and optionally make it active.",
          {"document": DOCUMENT_PROP,
           "layer": LAYER_PROP,
           "new_name": {"type": "string"},
@@ -515,6 +558,8 @@ TOOLS = [
                             "description": "See list_capabilities."},
           "visible": {"type": "boolean"},
           "locked": {"type": "boolean"},
+          "alpha_locked": ALPHA_LOCKED_PROP,
+          "inherit_alpha": INHERIT_ALPHA_PROP,
           "select": {"type": "boolean", "default": False,
                      "description": "Also make this the active layer."}}),
 
@@ -597,7 +642,10 @@ TOOLS = [
                          "tilt_y": {"type": "number", "minimum": -60, "maximum": 60},
                          "timestamp_ms": {"type": "number", "minimum": 0,
                                           "description": "Increasing sample time; default 16 ms spacing."}}, "required": ["x", "y"],
-                         "additionalProperties": False}}}, required=["points"]),
+                         "additionalProperties": False}},
+          "clamp": {"type": "boolean", "default": False,
+                    "description": "Pull off-canvas points onto the nearest edge "
+                                   "instead of rejecting the call."}}, required=["points"]),
 
     tool("select_polygon",
          "Set a closed polygon/lasso selection in document pixels; supports "
@@ -671,6 +719,7 @@ TOOLS = [
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["alpha", "color", "contiguous", "mask"], "default": "alpha"},
           "color": {"type": ["string", "array"]}, "data": {"type": "string", "description": "Base64 PNG mask."},
+          "data_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data."},
           "channel": {"type": "string", "enum": ["alpha", "luminance"], "default": "alpha"},
           "x": {"type": "integer"}, "y": {"type": "integer"},
           "threshold": {"type": "integer", "minimum": 0, "maximum": 255, "default": 1},
@@ -682,9 +731,11 @@ TOOLS = [
          "with opacity and optional PNG alpha/luminance mask. Respects selection, one native Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP, "source_layer": LAYER_PROP,
           "data": {"type": "string", "description": "Base64 image; mutually exclusive with source_layer."},
+          "data_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data."},
           "source_region": REGION_PROP, "region": REGION_PROP,
           "opacity": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
           "mask_data": {"type": "string", "description": "Base64 PNG matching destination dimensions."},
+          "mask_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of mask_data."},
           "mask_channel": {"type": "string", "enum": ["alpha", "luminance"], "default": "alpha"}},
          required=["region"]),
 
@@ -717,6 +768,7 @@ TOOLS = [
           "mode": {"type": "string", "enum": ["selection", "fill", "image"], "default": "selection"},
           "value": {"type": "integer", "minimum": 0, "maximum": 255, "default": 255},
           "data": {"type": "string"},
+          "data_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data."},
           "channel": {"type": "string", "enum": ["alpha", "luminance"], "default": "alpha"}}),
 
     tool("bake_layer", "Bake the static layer/group projection and masks into a new paint "
@@ -840,6 +892,62 @@ def _summarise(result):
     return json.dumps(_image_metadata(result), indent=2, ensure_ascii=False, default=str)
 
 
+MAX_PARAMS_FILE_BYTES = 32 * 1024 * 1024
+
+
+def _absolute_file(value, key, suffixes):
+    if not isinstance(value, str) or not value.strip():
+        raise BridgeError("invalid_request", "{0} must be a non-empty path".format(key))
+    path = os.path.expanduser(value.strip())
+    if not os.path.isabs(path):
+        raise BridgeError("invalid_request", "{0} must be an absolute path".format(key))
+    if not path.lower().endswith(suffixes):
+        raise BridgeError("invalid_request", "{0} must end with {1}".format(
+            key, " or ".join(suffixes)))
+    return os.path.normpath(path)
+
+
+def _merge_params_file(spec, args):
+    """Arguments read from params_file, overridden by the inline ones."""
+    if "params_file" not in args:
+        return args
+    path = _absolute_file(args.pop("params_file"), "params_file", (".json",))
+    try:
+        if os.path.getsize(path) > MAX_PARAMS_FILE_BYTES:
+            raise BridgeError("resource_limit", "params_file is larger than {0} MiB"
+                              .format(MAX_PARAMS_FILE_BYTES // (1024 * 1024)))
+        # utf-8-sig: PowerShell's Set-Content writes a BOM.
+        with open(path, "r", encoding="utf-8-sig") as handle:
+            loaded = json.load(handle)
+    except OSError as exc:
+        raise BridgeError("invalid_request", "could not read params_file {0}: {1}"
+                          .format(path, exc.strerror or exc))
+    except ValueError as exc:
+        raise BridgeError("invalid_request", "params_file {0} is not valid JSON: {1}"
+                          .format(path, exc))
+    if not isinstance(loaded, dict):
+        raise BridgeError("invalid_request",
+                          "params_file must hold one JSON object of arguments")
+    known = spec["inputSchema"]["properties"]
+    unknown = sorted(k for k in loaded if k not in known or k == "params_file")
+    if unknown:
+        raise BridgeError("invalid_request", "{0} does not take {1} (from params_file)"
+                          .format(spec["name"], ", ".join(unknown)))
+    merged = dict(loaded)
+    merged.update(args)
+    return merged
+
+
+def _write_png(path, encoded):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as handle:
+            handle.write(base64.b64decode(encoded))
+    except OSError as exc:
+        raise BridgeError("invalid_request", "could not write save_path {0}: {1}"
+                          .format(path, exc.strerror or exc))
+
+
 def call_tool(name, arguments):
     spec = TOOLS_BY_NAME.get(name)
     if spec is None:
@@ -847,7 +955,15 @@ def call_tool(name, arguments):
                           "No tool named {0!r}. Available: {1}".format(
                               name, ", ".join(sorted(TOOLS_BY_NAME))))
 
-    args = dict(arguments or {})
+    args = _merge_params_file(spec, dict(arguments or {}))
+    missing = [key for key in spec["_required"] if args.get(key) is None]
+    if missing:
+        raise BridgeError("invalid_request", "{0} needs {1}, inline or in params_file"
+                          .format(name, ", ".join(missing)))
+    save_path = None
+    if spec["_image"] and args.get("save_path") is not None:
+        save_path = _absolute_file(args.pop("save_path"), "save_path", (".png",))
+    args.pop("save_path", None)
     op = spec["_op"]
     if spec["_transform"] is not None:
         op, args = spec["_transform"](args)
@@ -856,6 +972,9 @@ def call_tool(name, arguments):
 
     if spec["_image"] and isinstance(result, dict) and result.get("png_base64"):
         png = result["png_base64"]
+        if save_path is not None:
+            _write_png(save_path, png)
+            return [{"type": "text", "text": _summarise(dict(result, saved_to=save_path))}]
         return [
             {"type": "text", "text": _summarise(result)},
             {"type": "image", "data": png, "mimeType": "image/png"},

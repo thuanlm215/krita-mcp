@@ -14,6 +14,7 @@ orders children bottom-first; the conversion is confined to ``_children`` and
 
 import base64
 import gc
+import math
 import os
 import sys
 import time
@@ -135,6 +136,45 @@ def _abspath(path, key="path"):
     if not isinstance(path, str) or not path.strip():
         raise OpError("{0} must be a non-empty file path".format(key))
     return os.path.abspath(os.path.expanduser(path.strip()))
+
+
+MAX_IMAGE_FILE_BYTES = 48 * 1024 * 1024
+_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+
+
+def _image_input(params, data_key, path_key, required=True):
+    """A QImage from base64 ``data_key`` or a local file named by ``path_key``.
+
+    The bridge listens on loopback only, so the client and Krita share a
+    filesystem. A path keeps large bitmaps out of the MCP conversation.
+    """
+    data = params.get(data_key)
+    path = params.get(path_key)
+    if data is not None and path is not None:
+        raise OpError("Give {0} or {1}, not both.".format(data_key, path_key))
+    if path is None:
+        if data is None:
+            if required:
+                raise OpError("missing required parameter {0!r} (or {1!r})"
+                              .format(data_key, path_key))
+            return None
+        return imaging.png_b64_to_qimage(data)
+    if not isinstance(path, str) or not os.path.isabs(os.path.expanduser(path.strip())):
+        raise OpError("{0} must be an absolute file path".format(path_key))
+    full = _abspath(path, path_key)
+    if not full.lower().endswith(_IMAGE_SUFFIXES):
+        raise OpError("{0} must name a {1} file".format(
+            path_key, "/".join(s.lstrip(".") for s in _IMAGE_SUFFIXES)))
+    if not os.path.isfile(full):
+        raise OpError("{0} does not exist: {1}".format(path_key, full),
+                      kind="not_found")
+    if os.path.getsize(full) > MAX_IMAGE_FILE_BYTES:
+        raise OpError("{0} is larger than {1} MiB".format(
+            path_key, MAX_IMAGE_FILE_BYTES // (1024 * 1024)), kind="resource_limit")
+    image = QImage()
+    if not image.load(full):
+        raise OpError("Could not decode {0} as an image".format(full))
+    return image.convertToFormat(QImage.Format_ARGB32)
 
 
 def _ensure_parent_dir(path):
@@ -292,6 +332,13 @@ def _node_entry(node, path, index_path, index, active_uuid, active_name):
         "color_depth": node.colorDepth(),
         "animated": bool(node.animated()),
     }
+    # Listed only when set, to keep layer trees short.
+    for key, getter in (("alpha_locked", "alphaLocked"), ("inherit_alpha", "inheritAlpha")):
+        try:
+            if getattr(node, getter)():
+                entry[key] = True
+        except Exception:
+            pass
     if uuid:
         entry["uuid"] = uuid
     try:
@@ -1006,6 +1053,19 @@ def _apply_layer_properties(node, params):
     if "locked" in params and params["locked"] is not None:
         node.setLocked(_as_bool(params["locked"], "locked"))
         changed.append("locked")
+    for key, setter, getter in (("alpha_locked", "setAlphaLocked", "alphaLocked"),
+                                ("inherit_alpha", "setInheritAlpha", "inheritAlpha")):
+        if params.get(key) is None:
+            continue
+        value = _as_bool(params[key], key)
+        if not hasattr(node, setter):
+            warnings.append("This Krita build cannot set {0}.".format(key))
+            continue
+        getattr(node, setter)(value)
+        if bool(getattr(node, getter)()) != value:
+            warnings.append("Krita ignored {0} on a {1}.".format(key, node.type()))
+            continue
+        changed.append(key)
     if "new_name" in params and params["new_name"]:
         node.setName(str(params["new_name"]))
         changed.append("name")
@@ -1293,6 +1353,27 @@ def _prepare(cmd, index):
             cx = _as_float(cmd.get("cx", x), "cx")
             cy = _as_float(cmd.get("cy", y), "cy")
             prep["geom"] = (cx - radius, cy - radius, radius * 2, radius * 2)
+        elif kind == "radial_gradient" and ("cx" in cmd or "cy" in cmd):
+            prep["ellipse"] = _gradient_ellipse(cmd, index)
+            cx, cy, rx, ry, angle = prep["ellipse"]
+            turn = math.radians(angle)
+            half_w = math.hypot(rx * math.cos(turn), ry * math.sin(turn))
+            half_h = math.hypot(rx * math.sin(turn), ry * math.cos(turn))
+            prep["geom"] = (cx - half_w, cy - half_h, 2 * half_w, 2 * half_h)
+        elif kind == "image":
+            source = _image_input(cmd, "data", "path")
+            prep["source"] = source
+            w = cmd.get("w", cmd.get("width"))
+            h = cmd.get("h", cmd.get("height"))
+            if w is None and h is None:
+                w, h = source.width(), source.height()
+            elif h is None:
+                w = _as_float(w, "w")
+                h = w * source.height() / float(max(1, source.width()))
+            elif w is None:
+                h = _as_float(h, "h")
+                w = h * source.width() / float(max(1, source.height()))
+            prep["geom"] = (x, y, _as_float(w, "w"), _as_float(h, "h"))
         else:
             w, h = size_of(cmd)
             prep["geom"] = (x, y, w, h)
@@ -1387,6 +1468,41 @@ def _gradient_stops(cmd):
     return out
 
 
+def _gradient_ellipse(cmd, index):
+    """(cx, cy, rx, ry, angle) for a radial gradient given by its centre."""
+    cx = _as_float(_req(cmd, "cx"), "cx")
+    cy = _as_float(_req(cmd, "cy"), "cy")
+    radius = cmd.get("radius")
+    rx = cmd.get("rx", radius)
+    ry = cmd.get("ry", radius)
+    if rx is None or ry is None:
+        raise OpError("commands[{0}] (radial_gradient) with cx/cy needs "
+                      "`radius`, or `rx` and `ry`".format(index))
+    rx, ry = _as_float(rx, "rx"), _as_float(ry, "ry")
+    if rx <= 0 or ry <= 0:
+        raise OpError("commands[{0}] (radial_gradient) radii must be positive"
+                      .format(index))
+    return cx, cy, rx, ry, _as_float(cmd.get("angle", 0), "angle")
+
+
+def _linear_axis(cmd, x, y, w, h):
+    """Start and end points of a linear gradient inside its fill box."""
+    ends = [cmd.get(key) for key in ("x1", "y1", "x2", "y2")]
+    if any(value is not None for value in ends):
+        if any(value is None for value in ends):
+            raise OpError("linear_gradient needs all of x1, y1, x2, y2, or none")
+        x1, y1, x2, y2 = [_as_float(v, k) for v, k in zip(ends, ("x1", "y1", "x2", "y2"))]
+        if x1 == x2 and y1 == y2:
+            raise OpError("linear_gradient x1,y1 and x2,y2 must differ")
+        return x1, y1, x2, y2
+    direction = str(cmd.get("direction", "horizontal")).lower()
+    if direction == "vertical":
+        return x, y, x, y + h
+    if direction == "diagonal":
+        return x, y, x + w, y + h
+    return x, y, x + w, y
+
+
 def _run_command(painter, prep, doc_rect):
     cmd = prep["cmd"]
     kind = prep["type"]
@@ -1464,27 +1580,40 @@ def _run_command(painter, prep, doc_rect):
             painter.drawText(QPointF(bx, by), line)
         return
 
-    if kind in ("linear_gradient", "radial_gradient"):
+    if kind == "linear_gradient":
         x, y, w, h = prep["geom"]
-        stops = _gradient_stops(cmd)
-        if kind == "linear_gradient":
-            angle = str(cmd.get("direction", "horizontal")).lower()
-            if angle == "vertical":
-                grad = QLinearGradient(x, y, x, y + h)
-            elif angle == "diagonal":
-                grad = QLinearGradient(x, y, x + w, y + h)
-            else:
-                grad = QLinearGradient(x, y, x + w, y)
-        else:
-            grad = QRadialGradient(x + w / 2.0, y + h / 2.0, max(w, h) / 2.0)
-        for position, color in stops:
+        grad = QLinearGradient(*_linear_axis(cmd, x, y, w, h))
+        for position, color in _gradient_stops(cmd):
             grad.setColorAt(position, color)
         painter.fillRect(QRectF(x, y, w, h), QBrush(grad))
         return
 
+    if kind == "radial_gradient":
+        # A unit circle mapped onto the ellipse: the last stop lands exactly
+        # on the ellipse, so a box that is not square has no hard edge.
+        if "ellipse" in prep:
+            cx, cy, rx, ry, angle = prep["ellipse"]
+        else:
+            x, y, w, h = prep["geom"]
+            cx, cy, rx, ry, angle = x + w / 2.0, y + h / 2.0, w / 2.0, h / 2.0, 0.0
+        grad = QRadialGradient(0.0, 0.0, 1.0)
+        for position, color in _gradient_stops(cmd):
+            grad.setColorAt(position, color)
+        place = QTransform().translate(cx, cy).rotate(angle)
+        brush = QBrush(grad)
+        brush.setTransform(QTransform().scale(max(rx, 1e-6), max(ry, 1e-6)) * place)
+        if "ellipse" in prep:
+            shape = QPainterPath()
+            shape.addEllipse(QPointF(0.0, 0.0), rx, ry)
+            painter.fillPath(place.map(shape), brush)
+        else:
+            x, y, w, h = prep["geom"]
+            painter.fillRect(QRectF(x, y, w, h), brush)
+        return
+
     if kind == "image":
         x, y, w, h = prep["geom"]
-        source = imaging.png_b64_to_qimage(_req(cmd, "data"))
+        source = prep["source"]
         if int(w) > 0 and int(h) > 0 and (source.width() != int(w)
                                           or source.height() != int(h)):
             source = source.scaled(int(w), int(h), Qt.IgnoreAspectRatio,
@@ -1544,8 +1673,20 @@ def op_draw(params):
     before = canvas.copy()
     canvas = canvas.convertToFormat(QImage.Format_ARGB32_Premultiplied)
 
+    # Krita never changes alpha on an alpha-locked layer. Paint onto a blank
+    # buffer, then composite it SourceAtop: each pixel keeps its alpha and
+    # its colour blends as colour * (1 - a) + paint * a, which is Krita's
+    # alpha-locked composite. Erasing cannot change alpha, so `clear` is
+    # skipped.
+    alpha_locked = bool(getattr(node, "alphaLocked", lambda: False)())
+    target = canvas
+    if alpha_locked:
+        target = QImage(canvas.size(), QImage.Format_ARGB32_Premultiplied)
+        target.fill(Qt.transparent)
+    skipped = 0
+
     painter = QPainter()
-    if not painter.begin(canvas):
+    if not painter.begin(target):
         raise OpError("Could not start painting on the layer buffer.")
     try:
         painter.setRenderHint(
@@ -1555,8 +1696,17 @@ def op_draw(params):
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.translate(-region.x(), -region.y())
         for prep in preps:
+            if alpha_locked and prep["type"] == "clear":
+                skipped += 1
+                continue
             _run_command(painter, prep, doc_rect)
     finally:
+        painter.end()
+
+    if alpha_locked:
+        painter = QPainter(canvas)
+        painter.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+        painter.drawImage(0, 0, target)
         painter.end()
 
     canvas = imaging.constrain_to_selection(before, canvas, selection, region)
@@ -1564,8 +1714,8 @@ def op_draw(params):
     steps = write_pixels(doc, node, region, canvas.convertToFormat(QImage.Format_ARGB32))
     _refresh(doc)
 
-    return {
-        "drawn": len(preps),
+    result = {
+        "drawn": len(preps) - skipped,
         "selection_respected": True,
         "undoable": True,
         "undo_steps": steps,
@@ -1574,6 +1724,11 @@ def op_draw(params):
                    "width": region.width(), "height": region.height()},
         "note": "Recorded in Krita's native history as one pixel-edit command.",
     }
+    if alpha_locked:
+        result["alpha_locked"] = True
+        if skipped:
+            result["skipped_clear"] = skipped
+    return result
 
 
 # --------------------------------------------------------------------------

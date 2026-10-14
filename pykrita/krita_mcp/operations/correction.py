@@ -167,6 +167,8 @@ def render_repair(params):
             if set(edit)!={'kind','arguments'} or not isinstance(edit['arguments'],dict):raise b.OpError('Edit requires fixed kind and arguments')
             args=dict(edit['arguments'])
             if 'document' in args or 'layer' in args:raise b.OpError('Candidate target is owned; document/layer overrides forbidden')
+            if kind=='patch' and ('data_path' in args or 'mask_path' in args):
+                raise b.OpError('Repair patches take bounded PNG data, not file paths')
             if kind=='patch' and 'data' in args:decode_png(args['data'])
             if kind=='patch' and 'mask_data' in args:decode_png(args['mask_data'])
             if kind=='stroke':

@@ -34,11 +34,11 @@ def texture_patch(params):
     doc=b.resolve_document(params.get("document"))
     node=paint_layer(doc,params.get("layer"))
     canvas=QRect(0,0,doc.width(),doc.height())
-    data=params.get("data")
-    if (data is None)==(params.get("source_layer") is None):
-        raise b.OpError("Provide either data or source_layer")
-    if data is not None:
-        source=b.imaging.png_b64_to_qimage(data)
+    from_file=params.get("data") is not None or params.get("data_path") is not None
+    if from_file==(params.get("source_layer") is not None):
+        raise b.OpError("Provide one of data, data_path or source_layer")
+    if from_file:
+        source=b._image_input(params,"data","data_path")
         check_pixels(source.rect())
         src=region(params.get("source_region"),source.rect(),source.rect())
         source=source.copy(src)
@@ -49,8 +49,8 @@ def texture_patch(params):
     dest=region(b._req(params,"region"),canvas,canvas)
     opacity=number(b._arg(params,"opacity",1),"opacity",0,1)
     source=source.scaled(dest.width(),dest.height(),Qt.IgnoreAspectRatio,Qt.SmoothTransformation)
-    if params.get("mask_data") is not None:
-        mask=b.imaging.png_b64_to_qimage(params["mask_data"])
+    mask=b._image_input(params,"mask_data","mask_path",required=False)
+    if mask is not None:
         if mask.size()!=source.size():
             raise b.OpError("mask_data dimensions must match the destination region")
         channel=str(b._arg(params,"mask_channel","alpha"))

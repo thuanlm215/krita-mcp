@@ -65,8 +65,9 @@ class TransportTests(unittest.TestCase):
                 'composite':{'before_png_base64':encoded,'after_png_base64':encoded,
                              'nested':[{'png_base64':encoded,'name':'before'}]}}
         for tool in ('inspect_repair','compare_images','get_image'):
+            needed={key:'x' for key in mcp_server.TOOLS_BY_NAME[tool]['_required']}
             with patch.object(mcp_server.BRIDGE,'call',return_value=result):
-                blocks=mcp_server.call_tool(tool,{})
+                blocks=mcp_server.call_tool(tool,needed)
             metadata,image,_=preview_content(blocks)
             self.assertEqual(image.size,(2,2))
             self.assertEqual(blocks[1]['data'],encoded)
@@ -117,6 +118,90 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(caught.exception.kind, "incomplete_response")
             self.assertNotIn("Is Krita running", str(caught.exception))
             self.assertEqual(client._request.call_count, 1)
+
+
+class ArgumentFileTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def write(self, name, payload, encoding="utf-8"):
+        path = os.path.join(self.tmp.name, name)
+        with open(path, "w", encoding=encoding) as handle:
+            handle.write(payload if isinstance(payload, str) else json.dumps(payload))
+        return path
+
+    def rejected(self, tool, arguments):
+        with patch.object(mcp_server.BRIDGE, "call") as call:
+            with self.assertRaises(mcp_server.BridgeError) as caught:
+                mcp_server.call_tool(tool, arguments)
+        call.assert_not_called()
+        return caught.exception
+
+    def test_every_tool_takes_params_file_and_image_tools_take_save_path(self):
+        for spec in mcp_server.TOOLS:
+            schema = spec["inputSchema"]
+            self.assertIn("params_file", schema["properties"], spec["name"])
+            self.assertEqual(schema["required"], [], spec["name"])
+            self.assertEqual("save_path" in schema["properties"], spec["_image"], spec["name"])
+            for key in spec["_required"]:
+                self.assertIn(key, schema["properties"], spec["name"])
+                self.assertIn(key, spec["description"].rsplit("params_file:", 1)[-1])
+
+    def test_params_file_merges_under_inline_arguments(self):
+        commands = [{"type": "fill_rect", "x": 0, "y": 0, "w": 4, "h": 4}]
+        path = self.write("draw.json", {"commands": commands, "layer": "File"},
+                          encoding="utf-8-sig")
+        with patch.object(mcp_server.BRIDGE, "call", return_value={"drawn": 1}) as call:
+            mcp_server.call_tool("draw", {"params_file": path, "layer": "Inline"})
+        call.assert_called_once_with("draw", {"commands": commands, "layer": "Inline"})
+
+    def test_params_file_supplies_required_arguments_and_reaches_transforms(self):
+        path = self.write("crop.json", {"action": "crop", "x": 1, "y": 2,
+                                        "width": 3, "height": 4})
+        with patch.object(mcp_server.BRIDGE, "call", return_value={}) as call:
+            mcp_server.call_tool("transform_image", {"params_file": path})
+        self.assertEqual(call.call_args[0][0], "crop_image")
+        self.assertNotIn("action", call.call_args[0][1])
+
+    def test_bad_params_files_are_rejected_before_krita(self):
+        good = self.write("ok.json", {"commands": []})
+        cases = {
+            "absolute path": "ok.json",
+            "must end with .json": self.write("args.txt", "{}"),
+            "not valid JSON": self.write("broken.json", "{\"commands\": ["),
+            "one JSON object": self.write("list.json", [1, 2]),
+            "does not take bogus": self.write("bogus.json", {"commands": [], "bogus": 1}),
+            "does not take params_file": self.write("nested.json", {"params_file": good}),
+            "could not read": os.path.join(self.tmp.name, "missing.json"),
+        }
+        for fragment, path in cases.items():
+            error = self.rejected("draw", {"params_file": path})
+            self.assertEqual(error.kind, "invalid_request", fragment)
+            self.assertIn(fragment, str(error))
+
+    def test_missing_required_arguments_are_named(self):
+        error = self.rejected("compare_images", {"after": "x"})
+        self.assertEqual(error.kind, "invalid_request")
+        self.assertIn("compare_images needs before", str(error))
+
+    def test_save_path_writes_png_and_keeps_it_out_of_the_reply(self):
+        encoded = png(3, 2, [10, 20, 30, 255])
+        target = os.path.join(self.tmp.name, "nested", "shot.png")
+        with patch.object(mcp_server.BRIDGE, "call",
+                          return_value={"png_base64": encoded, "width": 3}) as call:
+            blocks = mcp_server.call_tool("get_image", {"save_path": target})
+        self.assertNotIn("save_path", call.call_args[0][1])
+        self.assertEqual([block["type"] for block in blocks], ["text"])
+        metadata = json.loads(blocks[0]["text"])
+        self.assertEqual(metadata, {"width": 3, "saved_to": target})
+        with open(target, "rb") as handle:
+            self.assertEqual(handle.read(), base64.b64decode(encoded))
+
+    def test_save_path_must_be_an_absolute_png(self):
+        for path in ("shot.png", os.path.join(self.tmp.name, "shot.jpg")):
+            error = self.rejected("get_image", {"save_path": path})
+            self.assertEqual(error.kind, "invalid_request")
 
 
 class InstallConfigTests(unittest.TestCase):

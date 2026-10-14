@@ -152,7 +152,7 @@ def select_content(params):
     canvas = QRect(0, 0, doc.width(), doc.height())
     check_pixels(canvas)
     if mode == "mask":
-        image = b.imaging.png_b64_to_qimage(b._req(params, "data"))
+        image = b._image_input(params, "data", "data_path")
         check_pixels(image.rect())
         channel = str(b._arg(params, "channel", "alpha"))
         if channel not in ("alpha", "luminance"):
