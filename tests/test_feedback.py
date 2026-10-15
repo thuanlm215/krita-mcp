@@ -36,5 +36,13 @@ class FeedbackTests(unittest.TestCase):
         self.assertEqual(r['target_iou'],0);self.assertEqual(r['target_coverage'],0)
         self.assertEqual(r['symmetric_boundary_distance'],1)
 
+    def test_visible_changes_ignore_colour_under_transparency(self):
+        a=bytes([0,0,0,0, 9,9,9,255, 0,0,0,0, 0,0,0,0])
+        z=bytes([5,5,5,0, 9,9,9,255, 1,1,1,255, 0,0,0,0])
+        r,_,_=f.measurements(a,z,2,2)
+        self.assertEqual((r['changed_pixels'],r['changed_visible_pixels']),(2,1))
+        self.assertEqual(r['alpha_iou'],0.5)
+        self.assertEqual(f.measurements(a,a,2,2)[0]['alpha_iou'],1)
+
 
 if __name__=='__main__':unittest.main(verbosity=2)

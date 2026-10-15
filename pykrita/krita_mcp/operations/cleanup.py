@@ -2,6 +2,7 @@
 import bisect
 import math
 import re
+import sys
 
 from .. import ops as b
 from ..compat import QColor, QImage, QRect
@@ -265,20 +266,114 @@ def _dither(data, width, height, palette):
         data[y * stride:(y + 1) * stride] = row
 
 
-def _quantized(raw, width, height, palette, replace, dither):
-    """ARGB32 bytes mapped to the nearest palette colour; alpha unchanged."""
+class _Nearest(dict):
+    """Packed BGRA pixel -> palette index by Euclidean sRGB distance, filled on demand.
+
+    An accent only matches pixels within ``tolerance`` of it on every channel,
+    so a blended edge cannot pick up a gem or blush colour. The other entries
+    are pruned per 8x8x8 colour cell, which keeps the search exact and quick
+    for large palettes.
+    """
+
+    def __init__(self, colors, accents=(), tolerance=0):
+        super().__init__()
+        self.colors, self.tolerance = colors, tolerance
+        self.accents = sorted(accents)
+        self.plain = [i for i in range(len(colors)) if i not in self.accents]
+        self.cells = {}
+
+    def _gap(self, i, low, far):
+        total = 0
+        for lo, v in zip(low, self.colors[i]):
+            d = max(v - lo, lo + 7 - v) if far else max(lo - v, v - lo - 7, 0)
+            total += d * d
+        return total
+
+    def _cell(self, rgb):
+        key = tuple(v >> 3 for v in rgb)
+        found = self.cells.get(key)
+        if found is None:
+            low = [k << 3 for k in key]
+            # No entry farther from the cell than the best worst case can be nearest.
+            limit = min(self._gap(i, low, True) for i in self.plain)
+            found = self.cells[key] = [i for i in self.plain if self._gap(i, low, False) <= limit]
+        return found
+
+    def __missing__(self, key):
+        b_, g, r = key.to_bytes(4, sys.byteorder)[:3]
+        rgb = (r, g, b_)
+        choices = self._cell(rgb)
+        near = [i for i in self.accents
+                if all(abs(v - c) <= self.tolerance for v, c in zip(rgb, self.colors[i]))]
+        if near:
+            choices = sorted(choices + near)
+        best = min(choices, key=lambda i: sum((v - c) ** 2 for v, c in zip(rgb, self.colors[i])))
+        self[key] = best
+        return best
+
+
+def _indices(raw, width, height, palette, dither, accents=(), tolerance=0):
+    """One palette index per pixel; alpha takes no part in the match."""
     data = bytearray(raw)
     if dither == "ordered":
         _dither(data, width, height, palette)
-    # Qt maps each pixel to the nearest table colour; alpha is restored after.
-    image = QImage(bytes(data), width, height, width * 4, QImage.Format_RGB32).copy()
-    indexed = image.convertToFormat(QImage.Format_Indexed8,
-                                    [QColor(*_rgb(c)).rgba() for c in palette])
-    if replace is not None:
-        indexed.setColorTable([QColor(*_rgb(c)).rgba() for c in replace])
-    data = bytearray(b.imaging.image_bytes(indexed.convertToFormat(QImage.Format_ARGB32)))
+    data[3::4] = b"\xff" * (width * height)
+    nearest = _Nearest([_rgb(c) for c in palette], accents, tolerance)
+    return bytearray(map(nearest.__getitem__, memoryview(data).cast("I")))
+
+
+def _despeckle(index, raw, width, height, palette):
+    """A pixel that matches none of its eight neighbours takes the neighbour
+    colour nearest its own original colour. Pixels under half opacity neither
+    change nor count as neighbours. Returns how many pixels changed."""
+    pw = width + 2
+    flat, seen = bytearray(pw * (height + 2)), bytearray(pw * (height + 2))
+    visible = raw[3::4].translate(_THRESHOLD).translate(bytes([0]) + bytes([1]) * 255)
+    for y in range(height):
+        flat[(y + 1) * pw + 1:(y + 1) * pw + 1 + width] = index[y * width:(y + 1) * width]
+        seen[(y + 1) * pw + 1:(y + 1) * pw + 1 + width] = visible[y * width:(y + 1) * width]
+    size = len(flat)
+    plane, shown = int.from_bytes(flat, "big"), int.from_bytes(seen, "big")
+    equal = bytes([1]) + bytes(255)
+    offsets = [dy * pw + dx for dy in (-1, 0, 1) for dx in (-1, 0, 1) if dy or dx]
+    matched = 0
+    for offset in offsets:
+        # Shifting the packed planes lines every pixel up with one neighbour.
+        other = plane << 8 * offset if offset > 0 else plane >> -8 * offset
+        lit = shown << 8 * offset if offset > 0 else shown >> -8 * offset
+        same = ((plane ^ other) & ((1 << 8 * size) - 1)).to_bytes(size, "big").translate(equal)
+        matched |= int.from_bytes(same, "big") & lit
+    lonely = (shown & ~matched).to_bytes(size, "big")
+    colors = [_rgb(c) for c in palette]
+    changed = []
+    for spot in _RUN.finditer(lonely):
+        for i in range(*spot.span()):
+            near = {flat[i + o] for o in offsets if seen[i + o]}
+            if not near:
+                continue
+            y, x = divmod(i, pw)
+            p = ((y - 1) * width + x - 1) * 4
+            rgb = (raw[p + 2], raw[p + 1], raw[p])
+            changed.append(((y - 1) * width + x - 1, min(
+                sorted(near), key=lambda k: sum((v - c) ** 2 for v, c in zip(rgb, colors[k])))))
+    for i, value in changed:
+        index[i] = value
+    return len(changed)
+
+
+def _painted(index, raw, colors):
+    """ARGB32 bytes for palette indices, with the original alpha."""
+    data = bytearray(len(raw))
+    for channel, k in ((2, 0), (1, 1), (0, 2)):
+        table = bytes(_rgb(c)[k] for c in colors) + bytes(256 - len(colors))
+        data[channel::4] = index.translate(table)
     data[3::4] = raw[3::4]
     return data
+
+
+def _quantized(raw, width, height, palette, replace, dither):
+    """ARGB32 bytes mapped to the nearest palette colour; alpha unchanged."""
+    return _painted(_indices(raw, width, height, palette, dither), raw, replace or palette)
 
 
 def _swapped(raw, palette, replace, tolerance):
@@ -304,6 +399,27 @@ def _swapped(raw, palette, replace, tolerance):
                 data[s * 4 + channel:e * 4:4] = data[s * 4 + channel:e * 4:4].translate(table)
         counts.append(hit.count(1))
     return data, counts
+
+
+def _accents(params, palette):
+    """Palette indices of the colours listed in ``accents``."""
+    values = params.get("accents")
+    if values is None:
+        return set()
+    if params.get("palette") is None:
+        raise b.OpError("accents name colours of palette; median-cut colors have none")
+    if not isinstance(values, list) or not values:
+        raise b.OpError("accents must list palette colours")
+    colors = [_rgb(c) for c in palette]
+    found = set()
+    for value in values:
+        rgb = _rgb(b.parse_color(value))
+        if rgb not in colors:
+            raise b.OpError("accent {0} is not in palette".format(value))
+        found.add(colors.index(rgb))
+    if len(found) == len(set(colors)):
+        raise b.OpError("accents cannot be every palette colour")
+    return found
 
 
 def quantize_layer(params):
@@ -339,9 +455,19 @@ def quantize_layer(params):
         dither = str(b._arg(params, "dither", "none"))
         if dither not in ("none", "ordered"):
             raise b.OpError("dither must be none or ordered")
-        data = _quantized(raw, width, height, palette, replace, dither)
+        despeckle = b._as_bool(b._arg(params, "despeckle", False), "despeckle")
+        if despeckle and dither == "ordered":
+            raise b.OpError("despeckle would erase the ordered dither pattern; use one of them")
+        accents = _accents(params, palette)
+        tolerance = integer(b._arg(params, "tolerance", 32), "tolerance", 0, 255)
+        index = _indices(raw, width, height, palette, dither, accents, tolerance)
+        if despeckle:
+            result["despeckled_pixels"] = _despeckle(index, raw, width, height, palette)
+        data = _painted(index, raw, replace or palette)
         result.update(palette=["#{0:02x}{1:02x}{2:02x}".format(*_rgb(c)) for c in palette],
                       dither=dither)
+        if accents:
+            result.update(accents=sorted(accents), tolerance=tolerance)
     else:
         if params.get("palette") is None or replace is None:
             raise b.OpError("swap needs palette and replace")

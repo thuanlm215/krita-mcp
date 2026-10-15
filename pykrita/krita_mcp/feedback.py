@@ -54,8 +54,15 @@ def measurements(before,after,w,h,allowed=None,target=None,threshold=128):
     if changed:
         xs=[i%w for i in changed];ys=[i//w for i in changed]
         bounds={'x':min(xs),'y':min(ys),'width':max(xs)-min(xs)+1,'height':max(ys)-min(ys)+1}
-    result={'changed_pixels':len(changed),'changed_bounds':bounds,'outside_allowed_pixels':len(outside),
-            'alpha_threshold':threshold,'mask_rule':'allowed alpha 0 forbids every stored-byte change; target alpha >= threshold is foreground'}
+    # Colour stored under alpha 0 in both images is invisible, so it is not a visible change.
+    visible=sum(1 for i in changed if before[i*4+3] or after[i*4+3])
+    a=[before[i*4+3]>=threshold for i in range(w*h)];z=[after[i*4+3]>=threshold for i in range(w*h)]
+    union=sum(x or y for x,y in zip(a,z))
+    result={'changed_pixels':len(changed),'changed_visible_pixels':visible,'changed_bounds':bounds,
+            'outside_allowed_pixels':len(outside),
+            'alpha_iou':sum(x and y for x,y in zip(a,z))/union if union else 1,
+            'alpha_threshold':threshold,'mask_rule':'allowed alpha 0 forbids every stored-byte change; target alpha >= threshold is foreground',
+            'visible_rule':'changed_visible_pixels skips pixels transparent in both images; alpha_iou compares before and after alpha >= threshold'}
     if target is not None:
         a=[after[i*4+3]>=threshold for i in range(w*h)];t=[v>=threshold for v in target]
         overlap=sum(x and y for x,y in zip(a,t));union=sum(x or y for x,y in zip(a,t));total=sum(t)

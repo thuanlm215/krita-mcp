@@ -25,7 +25,7 @@ import time
 from painter_schema import STROKE,TARGET,FRAMES
 
 SERVER_NAME = "krita"
-SERVER_VERSION = "1.5.1"
+SERVER_VERSION = "1.6.0"
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PREFERRED_PROTOCOL = "2025-06-18"
@@ -355,6 +355,11 @@ INHERIT_ALPHA_PROP = {
     "description": "Clip this layer to the combined alpha of the layers below it.",
 }
 
+INCLUDE_TREE_PROP = {
+    "type": "boolean", "default": False,
+    "description": "Also return the whole layer tree as `layers`; inspect_document gives the same.",
+}
+
 PARAMS_FILE_PROP = {
     "type": "string",
     "description": ("Absolute path to a .json file holding an object of this "
@@ -453,7 +458,7 @@ TOOLS = [
     tool('sample_colors','Bounded sRGB region statistics: linear-light alpha-weighted mean and deterministic 4-bit palette.',
          {'document':DOCUMENT_PROP,'layer':LAYER_PROP,'region':REGION_PROP,'time':{'type':'integer','minimum':0},
           'palette_size':{'type':'integer','minimum':1,'maximum':16}},required=['document']),
-    tool('compare_images','Aligned before/after/difference/protected-violation panels, mask IoU/coverage and Manhattan boundary distance.',
+    tool('compare_images','Aligned before/after/difference/protected-violation panels; changed and visibly changed pixel counts, before/after alpha IoU, and with target_mask its IoU/coverage and Manhattan boundary distance.',
          {'before':{'type':'string'},'after':{'type':'string'},'allowed_mask':{'type':'string'},'target_mask':{'type':'string'},
           'offset':{'type':'object'},'landmarks':{'type':'array'},'alpha_threshold':{'type':'integer','minimum':1,'maximum':255},
           'max_size':{'type':'integer','minimum':64,'maximum':2048}},required=['before','after'],image=True),
@@ -570,7 +575,8 @@ TOOLS = [
           "visible": {"type": "boolean"},
           "locked": {"type": "boolean"},
           "alpha_locked": ALPHA_LOCKED_PROP,
-          "inherit_alpha": INHERIT_ALPHA_PROP}),
+          "inherit_alpha": INHERIT_ALPHA_PROP,
+          "include_tree": INCLUDE_TREE_PROP}),
 
     tool("set_layer",
          "Change a layer's properties: rename it, set opacity (0-255, or 0-1), "
@@ -590,25 +596,30 @@ TOOLS = [
                      "description": "Also make this the active layer."}}),
 
     tool("delete_layer", "Delete a layer and everything inside it.",
-         {"document": DOCUMENT_PROP, "layer": LAYER_PROP},
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "include_tree": INCLUDE_TREE_PROP},
          required=["layer"]),
 
     tool("duplicate_layer", "Copy a layer, placing the copy just above it.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "name": {"type": "string"},
-          "select": {"type": "boolean", "default": True}}),
+          "select": {"type": "boolean", "default": True},
+          "include_tree": INCLUDE_TREE_PROP}),
 
     tool("move_layer",
          "Restack a layer, optionally into a different group. `index` is "
-         "top-first within the new parent.",
+         "top-first within the new parent; negative counts from the bottom, "
+         "so -1 is the bottom.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "parent": {"type": "string",
                      "description": "Target group; omit to stay put."},
-          "index": {"type": "integer", "default": 0}},
+          "index": {"type": "integer", "default": 0},
+          "include_tree": INCLUDE_TREE_PROP},
          required=["layer"]),
 
     tool("merge_layer_down", "Merge a layer into the one directly beneath it.",
-         {"document": DOCUMENT_PROP, "layer": LAYER_PROP}),
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "include_tree": INCLUDE_TREE_PROP}),
 
     tool("get_image",
          "Render the canvas and return it as a PNG you can actually look at. "
@@ -870,9 +881,10 @@ TOOLS = [
           "prefix": {"type": "string", "default": "cell"},
           "uniform": {"type": "boolean", "default": False,
                       "description": "files: pad every PNG to the largest cell size."},
-          "align": {"type": "string", "enum": ["center", "bottom"], "default": "center",
+          "align": {"type": "string", "enum": ["center", "bottom", "row"], "default": "center",
                     "description": "files with uniform: where a cell sits in its frame; "
-                                   "bottom keeps feet on one baseline."},
+                                   "bottom keeps feet on one baseline; row keeps each cell's "
+                                   "height above the lowest edge of its sprite row, so a hop survives."},
           "padding": {"type": "integer", "minimum": 0, "maximum": 512, "default": 0}}),
 
     tool("remove_background", "Make a solid background transparent on a paint layer. "
@@ -900,10 +912,11 @@ TOOLS = [
                      "description": "Erode the remaining alpha by this many pixels to cut a halo."}}),
 
     tool("quantize_layer", "Recolour a paint layer. quantize maps every pixel to the "
-         "nearest colour of `palette`, or of `colors` median-cut colours, with optional "
-         "ordered dithering; `replace` then swaps palette entries by position for "
-         "colour variants. swap shifts only pixels within `tolerance` of each palette "
-         "colour by the difference to its replace colour, keeping their shading. "
+         "nearest colour (Euclidean sRGB) of `palette`, or of `colors` median-cut colours, "
+         "with optional ordered dithering; `accents` keeps small detail colours off blended "
+         "edges and `despeckle` cleans lone pixels; `replace` then swaps palette entries by "
+         "position for colour variants. swap shifts only pixels within `tolerance` of each "
+         "palette colour by the difference to its replace colour, keeping their shading. "
          "Alpha is kept unless alpha is threshold. Respects selection; one native Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["quantize", "swap"], "default": "quantize"},
@@ -915,8 +928,15 @@ TOOLS = [
                       "minItems": 1, "maxItems": 256,
                       "description": "Same length as palette."},
           "dither": {"type": "string", "enum": ["none", "ordered"], "default": "none"},
+          "accents": {"type": "array", "items": {"type": ["string", "array"]},
+                      "minItems": 1, "maxItems": 256,
+                      "description": "quantize: palette colours, such as a gem or blush, used only "
+                                     "for pixels within `tolerance` of them."},
+          "despeckle": {"type": "boolean", "default": False,
+                        "description": "quantize: a pixel matching none of its 8 neighbours takes "
+                                       "the neighbour colour nearest its original. Not with dither."},
           "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 32,
-                        "description": "swap: per-channel distance from a palette colour."},
+                        "description": "swap and accents: per-channel distance from a palette colour."},
           "alpha": {"type": "string", "enum": ["keep", "threshold"], "default": "keep",
                     "description": "threshold makes alpha 0 or 255 at 128, for pixel art."}}),
 

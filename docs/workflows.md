@@ -96,8 +96,8 @@ Preview matches apply for the same unchanged source and selection, and it does n
 
 1. `create_document` at the source size, then `draw` an `image` command with the generated file's `path` onto a paint layer.
 2. `remove_background`, with `holes` to clear backdrop between limbs. Check edges against a contrasting backdrop with `get_image`; raise `tolerance` a little for a noisy backdrop, `softness` for a softer matte, or `shrink: 1` for a stubborn halo.
-3. For a sheet, `slice_sheet` with `columns` set to the frames per row, and `output: "layers"` to repair cells in place, or `output: "files"` with `uniform` and `align: "bottom"` for engine frames. `import_animation` takes those files back as a timeline.
-4. `quantize_layer` with the game's `palette` to pull stray colours onto it, or `mode: "swap"` for colour variants.
+3. For a sheet, `slice_sheet` with `columns` set to the frames per row, and `output: "layers"` to repair cells in place, or `output: "files"` with `uniform` and `align: "bottom"` for engine frames (`align: "row"` when a frame jumps). `import_animation` takes those files back as a timeline.
+4. `quantize_layer` with the game's `palette` to pull stray colours onto it, or `mode: "swap"` for colour variants. For pixel art from a downscaled sprite, list small detail colours in `accents` and set `despeckle`.
 5. `outline_layer` for a consistent sprite outline, then `export_layers`.
 
 Wrap steps 2 and 4 in one `edit_batch` to undo them together.
@@ -145,7 +145,7 @@ Deterministic geometry does not promise pixel-exact replay of a randomized brush
 
 `get_image` can return a full-resolution ROI (`max_size=0`), a thumbnail, a layer, or merged pixels at an explicit animation time. Clean readback excludes onion skins and restores timeline state. Timeline position is native `currentUITime`.
 
-`sample_colors` ignores fully transparent pixels and returns an alpha-weighted linear-light sRGB mean, plus a deterministic 4-bit palette. `compare_images` returns aligned before, after, difference, and protected panels. Mask alpha zero forbids changes to every stored byte. IoU and coverage use alpha >= 128 by default. These metrics describe the stated geometry. They are not an art-quality score.
+`sample_colors` ignores fully transparent pixels and returns an alpha-weighted linear-light sRGB mean, plus a deterministic 4-bit palette. `compare_images` returns aligned before, after, difference, and protected panels. Mask alpha zero forbids changes to every stored byte, so `changed_pixels` counts colour changes under full transparency; `changed_visible_pixels` skips pixels transparent in both images, and `alpha_iou` compares the before and after silhouettes. IoU and coverage use alpha >= 128 by default. These metrics describe the stated geometry. They are not an art-quality score.
 
 Merged exports can differ in RGB where alpha is zero after a cache rebuild. Use a raw layer readback when the invisible bytes matter.
 

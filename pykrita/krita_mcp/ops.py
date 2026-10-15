@@ -44,7 +44,7 @@ from .compat import (
 from . import imaging
 from .imaging import ImagingError, parse_color
 
-PLUGIN_VERSION = "1.5.1"
+PLUGIN_VERSION = "1.6.0"
 
 OPS = {}
 
@@ -361,13 +361,35 @@ def _node_uuid(node):
 
 
 def _insert_node(parent, child, ui_index):
-    """Insert ``child`` so it lands at docker position ``ui_index`` (0 = top)."""
+    """Insert ``child`` so it lands at docker position ``ui_index`` (0 = top).
+
+    libkis puts a child added with ``above=None`` on top, so there is no
+    direct way to reach the bottom: add the child above the bottom one, then
+    lift that one back over it.
+    """
     siblings = list(parent.childNodes())  # bottom-first, libkis order
     count = len(siblings)
     ui_index = max(0, min(count, ui_index))
     below_pos = count - ui_index - 1
-    above = siblings[below_pos] if below_pos >= 0 else None
-    parent.addChildNode(child, above)
+    if below_pos >= 0 or not count:
+        return parent.addChildNode(child, siblings[below_pos] if count else None)
+    bottom = siblings[0]
+    if not parent.addChildNode(child, bottom):
+        return False
+    parent.removeChildNode(bottom)
+    return parent.addChildNode(bottom, child)
+
+
+def _with_tree(result, doc, params):
+    """Add the whole layer tree only on request; it costs a caller context."""
+    if _as_bool(_arg(params, "include_tree", False), "include_tree"):
+        result["layers"] = layer_tree(doc)
+    return result
+
+
+def _layer_entry(doc, node):
+    return _find_in_tree(layer_tree(doc), node) or \
+        _node_entry(node, node.name(), "", -1, _node_uuid(node), None)
 
 
 def _node_entry(node, path, index_path, index, active_uuid, active_name):
@@ -1095,10 +1117,7 @@ def op_create_layer(params):
     _refresh(doc)
 
     loaded = _wait_for_file_layer(doc, node) if linked else None
-    tree = layer_tree(doc, -1)
-    result = {"created": True, "layer": _find_in_tree(tree, node) or
-              _node_entry(node, node.name(), "", ui_index, _node_uuid(node), None),
-              "layers": tree}
+    result = _with_tree({"created": True, "layer": _layer_entry(doc, node)}, doc, params)
     if linked:
         result["file"] = {"path": node.path() if hasattr(node, "path") else None,
                           "loaded": loaded}
@@ -1206,7 +1225,7 @@ def op_delete_layer(params):
     name = node.name()
     node.remove()
     _refresh(doc)
-    return {"deleted": name, "layers": layer_tree(doc)}
+    return _with_tree({"deleted": name}, doc, params)
 
 
 @op("duplicate_layer", timeout=90.0, mutates=True)
@@ -1228,8 +1247,8 @@ def op_duplicate_layer(params):
     if _as_bool(_arg(params, "select", True), "select"):
         doc.setActiveNode(copy)
     _refresh(doc)
-    return {"duplicated": node.name(), "new_layer": copy.name(),
-            "layers": layer_tree(doc)}
+    return _with_tree({"duplicated": node.name(), "new_layer": copy.name(),
+                       "layer": _layer_entry(doc, copy)}, doc, params)
 
 
 @op("move_layer", timeout=90.0, mutates=True)
@@ -1263,7 +1282,7 @@ def op_move_layer(params):
     _insert_node(target_parent, node, ui_index)
     doc.setActiveNode(node)
     _refresh(doc)
-    return {"moved": name, "layers": layer_tree(doc)}
+    return _with_tree({"moved": name, "layer": _layer_entry(doc, node)}, doc, params)
 
 
 @op("merge_layer_down", timeout=120.0, mutates=True)
@@ -1281,9 +1300,17 @@ def op_merge_layer_down(params):
         raise OpError("{0!r} is the bottom layer of its group; there is "
                       "nothing under it to merge into.".format(node.name()))
     name = node.name()
-    node.mergeDown()
+    merged = node.mergeDown()
     _refresh(doc)
-    return {"merged": name, "layers": layer_tree(doc)}
+    if merged is None:
+        # libkis returns nothing once the source is gone; the merged layer
+        # takes the place of the pair.
+        siblings = _children(parent)
+        merged = siblings[position] if position < len(siblings) else None
+    result = {"merged": name}
+    if merged is not None:
+        result["layer"] = _layer_entry(doc, merged)
+    return _with_tree(result, doc, params)
 
 
 # --------------------------------------------------------------------------

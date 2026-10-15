@@ -568,4 +568,71 @@ class AdvancedTests(unittest.TestCase):
         self.assertEqual(self.alpha_at(5,5),0);self.assertEqual(self.pixel(50,50),[40,40,200,255])
         self.call('undo');self.assertEqual(self.digest(),before)
 
+    def children(self,group):
+        return [n['name'] for n in next(n for n in self.call('inspect_document')['layers']
+                                        if n['name']==group).get('children',[])]
+
+    def test_layers_reach_the_bottom_and_echo_the_tree_on_request(self):
+        r=self.call('create_layer',name='Low',index=-1)
+        self.assertEqual(r['layer']['name'],'Low');self.assertNotIn('layers',r)
+        self.assertEqual(self.layer_names(),['Paint','Background','Low'])
+        self.call('create_layer',name='Group',type='grouplayer')
+        for name in ('A','B'):self.call('create_layer',name=name,parent='Group')
+        r=self.call('move_layer',layer='Paint',parent='Group',index=-1)
+        self.assertEqual(r['layer']['path'],'Group/Paint');self.assertNotIn('layers',r)
+        self.assertEqual(self.children('Group'),['B','A','Paint'])
+        self.call('move_layer',layer='Group/B',index=2)
+        self.assertEqual(self.children('Group'),['A','Paint','B'])
+        r=self.call('move_layer',layer='Group/B',index=0,include_tree=True)
+        self.assertEqual(self.children('Group'),['B','A','Paint']);self.assertIn('layers',r)
+        r=self.call('duplicate_layer',layer='Group/A',name='A2')
+        self.assertEqual(r['layer']['path'],'Group/A2');self.assertNotIn('layers',r)
+        r=self.call('delete_layer',layer='Group/A2')
+        self.assertEqual(r['deleted'],'A2');self.assertNotIn('layers',r)
+        r=self.call('merge_layer_down',layer='Group/A')
+        self.assertTrue(r['layer']['path'].startswith('Group/'));self.assertNotIn('layers',r)
+        self.assertEqual(len(self.children('Group')),2)
+
+    def test_outside_outline_of_a_bottom_layer_goes_beneath_it(self):
+        self.call('create_layer',name='Group',type='grouplayer')
+        self.call('create_layer',name='Solo',parent='Group')
+        self.draw_rect(40,40,40,40,'red',layer='Group/Solo')
+        self.call('outline_layer',layer='Group/Solo',width=3)
+        self.assertEqual(self.children('Group'),['Solo','Solo outline'])
+        self.call('undo');self.assertEqual(self.children('Group'),['Solo'])
+
+    def test_slice_layers_keep_order_and_row_alignment_keeps_a_hop(self):
+        from PIL import Image
+        sheet=Path(self.temp.name)/self.doc/'hop.png';sheet.parent.mkdir(exist_ok=True)
+        image=Image.new('RGBA',(90,40),(0,0,0,0))
+        image.paste((255,0,0,255),(5,10,25,35));image.paste((0,0,255,255),(35,2,55,27))
+        image.paste((0,255,0,255),(65,10,85,35));image.save(sheet)
+        self.call('slice_sheet',path=str(sheet),name='Hop')
+        self.assertEqual(self.children('Hop'),['Hop 001','Hop 002','Hop 003'])
+        out=Path(self.temp.name)/self.doc/'hop'
+        self.call('slice_sheet',path=str(sheet),output='files',directory=str(out),uniform=True,align='row')
+        manifest=json.loads((out/'manifest.json').read_text())
+        self.assertEqual((manifest['align'],manifest['frame']),('row',{'width':20,'height':33}))
+        # The middle frame is 8 px up on the sheet and stays 8 px up in its PNG.
+        self.assertEqual([c['offset_y'] for c in manifest['cells']],[8,0,8])
+        with Image.open(out/manifest['cells'][1]['file']) as frame:
+            self.assertEqual(frame.convert('RGBA').getpixel((10,24)),(0,0,255,255))
+            self.assertEqual(frame.convert('RGBA').getpixel((10,25))[3],0)
+
+    def test_quantize_accents_and_despeckle(self):
+        self.call('draw',layer='Paint',commands=[
+            {'type':'fill_rect','x':0,'y':0,'w':64,'h':64,'color':[42,158,82,255]},
+            {'type':'fill_rect','x':10,'y':10,'w':1,'h':1,'color':[220,215,225,255]},
+            {'type':'fill_rect','x':50,'y':50,'w':1,'h':1,'color':[200,120,130,255]},
+            {'type':'fill_rect','x':30,'y':30,'w':4,'h':4,'color':[250,60,90,255]}])
+        palette=['#2a9e52','#ffffff','#ff3b5c']
+        r=self.call('quantize_layer',layer='Paint',palette=palette,accents=['#ff3b5c'],despeckle=True)
+        self.assertEqual((r['accents'],r['tolerance'],r['despeckled_pixels'],r['undo_steps']),([2],32,1,1))
+        self.assertEqual(self.pixel(10,10),[42,158,82,255])
+        self.assertEqual(self.pixel(50,50),[42,158,82,255])
+        self.assertEqual(self.pixel(31,31),[255,59,92,255])
+        self.assertIn('median-cut',self.failed('quantize_layer',layer='Paint',colors=4,accents=['#ffffff']))
+        self.assertIn('not in palette',self.failed('quantize_layer',layer='Paint',palette=palette,accents=['blue']))
+        self.assertIn('dither',self.failed('quantize_layer',layer='Paint',palette=palette,despeckle=True,dither='ordered'))
+
 if __name__=='__main__':unittest.main(verbosity=2)

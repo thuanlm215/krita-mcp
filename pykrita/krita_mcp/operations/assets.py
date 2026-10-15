@@ -106,15 +106,14 @@ def outline_layer(params):
     painter.end()
     image = band.convertToFormat(QImage.Format_ARGB32)
     parent = node.parentNode()
-    siblings = list(parent.childNodes())  # bottom first
-    below = siblings.index(node) - 1
+    uuid = b._node_uuid(node)
+    index = next(i for i, sibling in enumerate(b._children(parent)) if b._node_uuid(sibling) == uuid)
     with group(doc, "MCP outline"):
         layer = doc.createNode(name, "paintlayer")
         b.imaging.write_node_image(layer, region, image)
         # An outside outline sits under its source and fills beneath it, so
         # antialiased source edges cover it without a seam.
-        anchor = node if position != "outside" else (siblings[below] if below >= 0 else None)
-        if not parent.addChildNode(layer, anchor):
+        if not b._insert_node(parent, layer, index + 1 if position == "outside" else index):
             raise b.OpError("Could not attach the outline layer")
     b._refresh(doc)
     return {"layer": b._find_in_tree(b.layer_tree(doc), layer), "source": node.name(),
@@ -604,12 +603,13 @@ def slice_sheet(params):
             folder = doc.createGroupLayer(name)
             if not doc.rootNode().addChildNode(folder, siblings[-1] if siblings else None):
                 raise b.OpError("Could not attach the slices group")
-            for cell in cells:
+            # libkis adds a child with no anchor on top, so the last slice goes
+            # in first and the docker lists them in order.
+            for cell in reversed(cells):
                 x0, y0, x1, y1 = cell["box"]
                 layer = doc.createNode("{0} {1:03d}".format(name, cell["index"] + 1), "paintlayer")
                 b.imaging.write_node_image(layer, QRect(cell["x"], cell["y"], x1 - x0, y1 - y0),
                                            _cell_image(sheet, cell, threshold))
-                # Each slice goes to the bottom, so the docker lists them in order.
                 if not folder.addChildNode(layer, None):
                     raise b.OpError("Could not attach a slice layer")
         b._refresh(doc)
@@ -620,6 +620,29 @@ def slice_sheet(params):
     return dict(result, **_write_slices(params, sheet, cells, threshold))
 
 
+def _row_floors(cells):
+    """Each cell's row floor: the lowest edge among the cells of its sprite row.
+
+    Grid and columns rows are known; other cells share a row when their
+    heights overlap.
+    """
+    groups = {}
+    band, bottom = -1, None
+    for cell in sorted((c for c in cells if "row" not in c), key=lambda c: c["box"][1]):
+        if bottom is None or cell["box"][1] >= bottom:
+            band, bottom = band + 1, cell["box"][3]
+        bottom = max(bottom, cell["box"][3])
+        groups.setdefault(("band", band), []).append(cell)
+    for cell in cells:
+        if "row" in cell:
+            groups.setdefault(("row", cell["row"]), []).append(cell)
+    floors = {}
+    for members in groups.values():
+        floor = max(c["box"][3] for c in members)
+        floors.update((c["index"], floor) for c in members)
+    return floors
+
+
 def _write_slices(params, sheet, cells, threshold):
     directory = Path(str(b._req(params, "directory"))).expanduser()
     if not directory.is_absolute():
@@ -628,12 +651,15 @@ def _write_slices(params, sheet, cells, threshold):
         raise b.OpError("Export directory must be new; existing files are preserved")
     uniform = b._as_bool(b._arg(params, "uniform", False), "uniform")
     align = str(b._arg(params, "align", "center"))
-    if align not in ("center", "bottom"):
-        raise b.OpError("align must be center or bottom")
+    if align not in ("center", "bottom", "row"):
+        raise b.OpError("align must be center, bottom or row")
     padding = integer(b._arg(params, "padding", 0), "padding", 0, 512)
     prefix = re.sub(r"[^\w.-]+", "_", str(b._arg(params, "prefix", "cell"))).strip("._") or "cell"
+    floors = _row_floors(cells) if uniform and align == "row" else None
     frame_w = max(c["width"] for c in cells) if uniform else None
-    frame_h = max(c["height"] for c in cells) if uniform else None
+    frame_h = None
+    if uniform:
+        frame_h = max(floors[c["index"]] - c["box"][1] if floors else c["height"] for c in cells)
     directory.parent.mkdir(parents=True, exist_ok=True)
     stage = stage_directory(directory.parent, ".krita-slices-")
     entries = []
@@ -643,7 +669,10 @@ def _write_slices(params, sheet, cells, threshold):
             w, h = x1 - x0, y1 - y0
             fw, fh = (frame_w, frame_h) if uniform else (w, h)
             left = (fw - w) // 2
-            top = fh - h if align == "bottom" else (fh - h) // 2
+            if floors:
+                top = fh - (floors[cell["index"]] - y0)
+            else:
+                top = fh - h if align == "bottom" else (fh - h) // 2
             image = QImage(fw + 2 * padding, fh + 2 * padding, QImage.Format_ARGB32)
             image.fill(QColor(0, 0, 0, 0))
             painter = QPainter(image)

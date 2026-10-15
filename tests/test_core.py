@@ -236,6 +236,46 @@ class AssetToolTests(unittest.TestCase):
         self.assertTrue({"ink", "svg"} <= documented)
         self.assertEqual(documented - set(command["properties"]["type"]["enum"]), set())
 
+    def test_layer_tools_echo_the_tree_only_on_request(self):
+        tools = mcp_server.TOOLS_BY_NAME
+        for name in ("create_layer", "delete_layer", "duplicate_layer", "move_layer", "merge_layer_down"):
+            self.assertIn("include_tree", tools[name]["inputSchema"]["properties"], name)
+        self.assertIn("row", tools["slice_sheet"]["inputSchema"]["properties"]["align"]["enum"])
+        self.assertTrue({"accents", "despeckle"} <= set(tools["quantize_layer"]["inputSchema"]["properties"]))
+
+    def test_insert_node_reaches_every_docker_position(self):
+        class Node:
+            def __init__(self, name):
+                self.name, self.kids = name, []
+
+            def childNodes(self):
+                return list(self.kids)  # bottom first, as libkis
+
+            def addChildNode(self, child, above):
+                # libkis puts a child with no anchor on top.
+                self.kids.insert(len(self.kids) if above is None else self.kids.index(above) + 1, child)
+                return True
+
+            def removeChildNode(self, child):
+                self.kids.remove(child)
+                return True
+
+        for count in range(4):
+            for ui_index in range(count + 1):
+                parent = Node("parent")
+                parent.kids = [Node(str(i)) for i in range(count)]
+                docker = [n.name for n in reversed(parent.kids)]
+                self.assertTrue(self.ops._insert_node(parent, Node("new"), ui_index))
+                docker.insert(ui_index, "new")
+                self.assertEqual([n.name for n in reversed(parent.kids)], docker, (count, ui_index))
+
+    def test_row_alignment_floors_follow_each_sprite_row(self):
+        cells = [{"index": 0, "box": (0, 10, 20, 50)}, {"index": 1, "box": (30, 2, 50, 42)},
+                 {"index": 2, "box": (0, 70, 20, 90)}]
+        self.assertEqual(self.assets._row_floors(cells), {0: 50, 1: 50, 2: 90})
+        grid = [{"index": 0, "box": (0, 0, 10, 5), "row": 0}, {"index": 1, "box": (20, 8, 30, 12), "row": 0}]
+        self.assertEqual(self.assets._row_floors(grid), {0: 12, 1: 12})
+
     def test_export_staging_directories_follow_the_umask(self):
         common = importlib.import_module(package.__name__ + ".operations.common")
         previous = os.umask(0o022)
@@ -438,6 +478,54 @@ class AssetCleanupTests(unittest.TestCase):
         self.assertGreater(counts[0], 2000)
         self.assertEqual(self.rgba(shifted, 30, 50), (30, 30, 200, 255))
         self.assertEqual(self.rgba(shifted, 50, 50), (255, 255, 255, 255))
+
+
+    def test_quantize_picks_the_euclidean_nearest_colour(self):
+        import random
+        from PyQt6.QtGui import QColor
+        cleanup = self.cleanup()
+        rng = random.Random(7)
+        colors = [tuple(rng.randrange(256) for _ in range(3)) for _ in range(200)]
+        nearest = cleanup._Nearest(colors)
+        for _ in range(3000):
+            rgb = tuple(rng.randrange(256) for _ in range(3))
+            key = int.from_bytes(bytes((rgb[2], rgb[1], rgb[0], 255)), sys.byteorder)
+            want = min(range(len(colors)),
+                       key=lambda i: (sum((a - b) ** 2 for a, b in zip(rgb, colors[i])), i))
+            self.assertEqual(nearest[key], want, rgb)
+        # Qt's table conversion sums channel differences and turned this
+        # dark outline pixel green.
+        palette = [QColor(c) for c in ("#1a1230", "#17663a", "#ff3b5c")]
+        self.assertEqual(cleanup._indices(bytes((67, 57, 66, 255)), 1, 1, palette, "none")[0], 0)
+
+    def test_accents_stay_off_blended_pixels(self):
+        from PyQt6.QtGui import QColor
+        cleanup = self.cleanup()
+        palette = [QColor(c) for c in ("#ffffff", "#1a1230", "#ff3b5c")]
+        raw = bytes((130, 120, 200, 255, 90, 60, 250, 255))  # BGRA: a blend, then a gem pixel
+        self.assertEqual(list(cleanup._indices(raw, 2, 1, palette, "none")), [2, 2])
+        self.assertEqual(list(cleanup._indices(raw, 2, 1, palette, "none", {2}, 32)), [0, 2])
+
+    def test_despeckle_replaces_only_lone_pixels(self):
+        from PyQt6.QtGui import QColor
+        cleanup = self.cleanup()
+        palette = [QColor(c) for c in ("#2a9e52", "#ffffff", "#e8798a")]
+        w, h = 7, 5
+        raw = bytearray(bytes((82, 158, 42, 255)) * (w * h))
+        index = bytearray(w * h)
+        index[2 * w + 1] = 2                       # a lone blended pixel
+        raw[(2 * w + 1) * 4:(2 * w + 2) * 4] = bytes((150, 130, 140, 255))
+        index[2 * w + 4] = index[2 * w + 5] = 1    # a two-pixel glint stays
+        index[4 * w - 1] = index[4 * w] = 2        # adjacent only if rows wrapped
+        self.assertEqual(cleanup._despeckle(index, bytes(raw), w, h, palette), 3)
+        self.assertEqual((index[2 * w + 1], index[4 * w - 1], index[4 * w]), (0, 0, 0))
+        self.assertEqual((index[2 * w + 4], index[2 * w + 5]), (1, 1))
+        # Transparent neighbours do not count: a dot alone in empty space stays.
+        raw = bytearray(w * h * 4)
+        raw[(2 * w + 3) * 4:(2 * w + 4) * 4] = bytes((140, 120, 230, 255))
+        index = bytearray(w * h)
+        index[2 * w + 3] = 2
+        self.assertEqual(cleanup._despeckle(index, bytes(raw), w, h, palette), 0)
 
 
 class InstallConfigTests(unittest.TestCase):
