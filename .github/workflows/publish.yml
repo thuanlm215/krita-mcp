@@ -37,7 +37,7 @@ jobs:
           for package in "${whl[0]}" "${sdist[0]}"; do
             count=$(uvx --from "$package" krita-mcp --list-tools | wc -l)
             count=${count// /}
-            if [ "$count" != "52" ]; then
+            if [ "$count" != "57" ]; then
               echo "$package listed $count tools" >&2
               exit 1
             fi

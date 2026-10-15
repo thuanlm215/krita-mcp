@@ -1,6 +1,6 @@
 # Using Krita MCP
 
-Version 1.4 exposes 57 tools and 66 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
+Version 1.5 exposes 57 tools and 66 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
 
 ## Tools
 
