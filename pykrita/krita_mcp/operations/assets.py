@@ -5,12 +5,11 @@ import math
 from pathlib import Path
 import re
 import shutil
-import tempfile
 
 from .. import ops as b
 from ..compat import QColor, QImage, QPainter, QPointF, QRect
 from .animation import integer
-from .common import check_pixels, number
+from .common import check_pixels, number, stage_directory
 
 MAX_OUTLINE = 32
 MAX_EXPORT_LAYERS = 256
@@ -179,7 +178,7 @@ def export_layers(params):
     check_pixels(canvas)
     doc.waitForDone()
     output.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=".krita-layers-", dir=str(output.parent)))
+    stage = stage_directory(output.parent, ".krita-layers-")
     entries, skipped, used = [], [], set()
     try:
         for node in nodes:
@@ -636,7 +635,7 @@ def _write_slices(params, sheet, cells, threshold):
     frame_w = max(c["width"] for c in cells) if uniform else None
     frame_h = max(c["height"] for c in cells) if uniform else None
     directory.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=".krita-slices-", dir=str(directory.parent)))
+    stage = stage_directory(directory.parent, ".krita-slices-")
     entries = []
     try:
         for cell in cells:

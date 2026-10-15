@@ -2,6 +2,7 @@
 """End-to-end v1.2 tests against an isolated live Krita, through MCP stdio."""
 import base64
 import json
+import os
 from pathlib import Path
 import struct
 import unittest
@@ -218,6 +219,7 @@ class AdvancedTests(unittest.TestCase):
         r=self.call('export_animation',directory=str(target),start=0,end=8,step=4,columns=3,anchor={'x':20,'y':60})
         self.assertEqual(r['frames'],3);self.assertEqual(r['restored_time'],4)
         manifest=json.loads((target/'manifest.json').read_text())
+        self.assertEqual(target.stat().st_mode&0o777,0o777&~self.umask())
         self.assertEqual(manifest['fps'],12);self.assertEqual(manifest['frames'][1]['x'],128)
         self.assertEqual(manifest['frames'][0]['anchor'],{'x':20,'y':60})
         self.assertEqual((target/'frame_000000.png').read_bytes(),(target/'frame_000008.png').read_bytes())
@@ -344,6 +346,11 @@ class AdvancedTests(unittest.TestCase):
         self.assertEqual([block['type'] for block in result['content']],['text'])
         self.assertEqual(out.read_bytes()[:8],b'\x89PNG\r\n\x1a\n')
 
+    @staticmethod
+    def umask():
+        mask=os.umask(0);os.umask(mask)
+        return mask
+
     def alpha_at(self,x,y,layer='Paint'):
         return bytes.fromhex(self.fixture('pixels',layer=layer,rect=[x,y,1,1]))[3]
 
@@ -422,6 +429,7 @@ class AdvancedTests(unittest.TestCase):
             self.assertEqual(rgba.size,(12,13))
             self.assertEqual(rgba.getpixel((2,2)),(0,0,255,255));self.assertEqual(rgba.getpixel((1,1))[3],0)
         self.assertIn('must be new',self.failed('export_layers',directory=str(out)))
+        self.assertEqual(out.stat().st_mode&0o777,0o777&~self.umask())
         full=Path(self.temp.name)/self.doc/'full'
         self.call('export_layers',directory=str(full),layers=['Top'],trim=False)
         entry=json.loads((full/'manifest.json').read_text())['layers'][0]
@@ -475,6 +483,7 @@ class AdvancedTests(unittest.TestCase):
         self.assertEqual((r['cells'],r['background'],r['mutated']),(2,'#ffffff',False))
         manifest=json.loads((out/'manifest.json').read_text())
         self.assertEqual(manifest['frame'],{'width':14,'height':22})
+        self.assertEqual(out.stat().st_mode&0o777,0o777&~self.umask())
         first=manifest['cells'][0]
         self.assertEqual((first['offset_x'],first['offset_y']),(2,11))
         with Image.open(out/first['file']) as frame:

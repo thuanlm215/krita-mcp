@@ -25,7 +25,7 @@ import time
 from painter_schema import STROKE,TARGET,FRAMES
 
 SERVER_NAME = "krita"
-SERVER_VERSION = "1.5.0"
+SERVER_VERSION = "1.5.1"
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PREFERRED_PROTOCOL = "2025-06-18"
@@ -290,8 +290,8 @@ DRAW_COMMAND = {
         "type": {
             "type": "string",
             "enum": ["fill_rect", "rect", "ellipse", "circle", "line",
-                     "polyline", "polygon", "text", "linear_gradient",
-                     "radial_gradient", "image", "clear"],
+                     "polyline", "polygon", "ink", "text", "linear_gradient",
+                     "radial_gradient", "image", "svg", "clear"],
         },
         "x": {"type": "number"}, "y": {"type": "number"},
         "w": {"type": "number"}, "h": {"type": "number"},

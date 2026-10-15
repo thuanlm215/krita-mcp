@@ -1,10 +1,26 @@
 """Validation and native action helpers shared by artist workflow tools."""
 
 import math
+import os
+from pathlib import Path
+import tempfile
 
 from .. import ops as b
 
 MAX_PIXELS = 16 * 1024 * 1024
+
+
+def stage_directory(parent, prefix):
+    """A hidden staging directory that is later renamed into place as an export.
+
+    mkdtemp makes it 0700, which would leave exported assets readable only by
+    their owner. Give it the mode a plain mkdir gets under the current umask.
+    """
+    stage = Path(tempfile.mkdtemp(prefix=prefix, dir=str(parent)))
+    mask = os.umask(0)
+    os.umask(mask)
+    os.chmod(stage, 0o777 & ~mask)
+    return stage
 
 
 def number(value, name, minimum=None, maximum=None):

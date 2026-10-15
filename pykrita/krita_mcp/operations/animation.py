@@ -3,14 +3,13 @@ import json
 import math
 from pathlib import Path
 import shutil
-import tempfile
 import base64
 import hashlib
 
 from .. import ops as b
 from ..native_commands import get_time
 from ..compat import QColor, QImage, QPainter, QRect
-from .common import activate, action, check_pixels, number, paint_layer
+from .common import activate, action, check_pixels, number, paint_layer, stage_directory
 
 
 def integer(value,name,minimum=0,maximum=100000):
@@ -105,7 +104,7 @@ def export_animation(params):
     onion_nodes=[n for _,_,n in b._flatten_tree(doc.rootNode(),"","",[])
                  if n.type()=="paintlayer" and n.animated() and onion(n)]
     output.parent.mkdir(parents=True,exist_ok=True)
-    stage=Path(tempfile.mkdtemp(prefix=".krita-animation-",dir=str(output.parent)))
+    stage=stage_directory(output.parent,".krita-animation-")
     atlas=QImage(doc.width()*columns,doc.height()*rows,QImage.Format_ARGB32)
     atlas.fill(QColor(0,0,0,0));entries=[]
     atlas_ptr=atlas.bits();atlas_ptr.setsize(atlas.sizeInBytes());atlas_bytes=memoryview(atlas_ptr)

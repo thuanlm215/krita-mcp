@@ -227,6 +227,26 @@ class AssetToolTests(unittest.TestCase):
         command = tools["draw"]["inputSchema"]["properties"]["commands"]["items"]["properties"]
         self.assertTrue({"svg", "smooth", "rx", "ry", "angle", "path"} <= set(command))
 
+    def test_draw_schema_lists_every_documented_command(self):
+        command = mcp_server.DRAW_COMMAND
+        documented = set()
+        for line in command["description"].splitlines():
+            if line.startswith("- ") and ":" in line:
+                documented.update(name.strip() for name in line[2:].split(":")[0].split("/"))
+        self.assertTrue({"ink", "svg"} <= documented)
+        self.assertEqual(documented - set(command["properties"]["type"]["enum"]), set())
+
+    def test_export_staging_directories_follow_the_umask(self):
+        common = importlib.import_module(package.__name__ + ".operations.common")
+        previous = os.umask(0o022)
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                stage = common.stage_directory(tmp, ".stage-")
+                self.assertEqual(stage.stat().st_mode & 0o777, 0o755)
+                self.assertTrue(stage.name.startswith(".stage-"))
+        finally:
+            os.umask(previous)
+
     def test_changed_spans_match_a_per_pixel_scan(self):
         import random
         rng = random.Random(7)
