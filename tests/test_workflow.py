@@ -285,6 +285,18 @@ class WorkflowTests(unittest.TestCase):
         self.call("set_selection", x=10, y=10, width=20, height=20)
         self.assertIsNotNone(self.call("inspect_document")["selection"])
 
+    def test_deselect_clears_only_the_requested_document(self):
+        first = self.doc
+        self.call("set_selection", x=10, y=10, width=20, height=20)
+        self.setUp()
+        self.call("set_selection", x=30, y=30, width=10, height=10)
+        for _ in range(3):
+            self.call("set_selection", document=first, mode="none")
+            self.assertIsNone(self.call("inspect_document", document=first)["selection"])
+            self.assertIsNotNone(self.call("inspect_document")["selection"])
+            self.call("undo", document=first)
+            self.assertIsNotNone(self.call("inspect_document", document=first)["selection"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

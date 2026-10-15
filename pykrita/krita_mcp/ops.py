@@ -44,7 +44,7 @@ from .compat import (
 from . import imaging
 from .imaging import ImagingError, parse_color
 
-PLUGIN_VERSION = "1.6.0"
+PLUGIN_VERSION = "1.6.1"
 
 OPS = {}
 
@@ -1862,12 +1862,40 @@ def _run_command(painter, prep, doc_rect):
     raise OpError("unhandled draw type {0!r}".format(kind))
 
 
+def _draw_keyframe(node, value):
+    """The exact raster keyframe `draw` paints on, or None for a static layer."""
+    from .native_commands import frames
+    from .operations.animation import integer
+    if value is None:
+        if node.animated():
+            raise OpError("Layer {0!r} is animated; pass `time` with the keyframe to "
+                          "draw on (animation_frame lists them).".format(node.name()))
+        return None
+    keyframe = integer(value, "time", 0, 99999)
+    if not node.animated():
+        raise OpError("Layer {0!r} has no animation; omit `time`, or add a keyframe "
+                      "with animation_frame first.".format(node.name()))
+    keys = frames(node)
+    if keyframe not in keys:
+        held = max((k for k in keys if k <= keyframe), default=None)
+        if held is None:
+            hint = "no keyframe is exposed there yet"
+        else:
+            hint = ("it shows keyframe {0}. Draw at time {0} to change that key everywhere "
+                    "it is held, or add a key at {1} with animation_frame blank/duplicate"
+                    .format(held, keyframe))
+        raise OpError("Time {0} on {1!r} is not a keyframe: {2}."
+                      .format(keyframe, node.name(), hint))
+    return keyframe
+
+
 @op("draw", timeout=120.0, mutates=True)
 def op_draw(params):
     from .operations.common import paint_layer
     doc = resolve_document(params.get("document"))
-    node = paint_layer(doc, params.get("layer"))
+    node = paint_layer(doc, params.get("layer"), allow_animated=True)
     imaging.require_pixel_ops(node)
+    keyframe = _draw_keyframe(node, params.get("time"))
     if node.locked():
         raise OpError("Layer {0!r} is locked; unlock it with set_layer before "
                       "drawing.".format(node.name()))
@@ -1907,6 +1935,42 @@ def op_draw(params):
     from .operations.common import check_pixels
     check_pixels(region)
 
+    # Every check above precedes the timeline switch. A keyframe edit reads
+    # and writes that frame's own pixels, then restores the viewing time.
+    viewing = None
+    if keyframe is not None:
+        from .native_commands import get_time, set_time
+        viewing = get_time(doc)
+        if viewing != keyframe:
+            set_time(doc, keyframe)
+    try:
+        steps, skipped = _draw_pixels(doc, node, params, preps, region, selection, keyframe)
+    finally:
+        if viewing is not None and viewing != keyframe:
+            set_time(doc, viewing)
+
+    result = {
+        "drawn": len(preps) - skipped,
+        "selection_respected": True,
+        "undoable": True,
+        "undo_steps": steps,
+        "layer": node.name(),
+        "region": {"x": region.x(), "y": region.y(),
+                   "width": region.width(), "height": region.height()},
+        "note": "Recorded in Krita's native history as one pixel-edit command.",
+    }
+    if keyframe is not None:
+        result["time"] = keyframe
+    if bool(getattr(node, "alphaLocked", lambda: False)()):
+        result["alpha_locked"] = True
+        if skipped:
+            result["skipped_clear"] = skipped
+    return result
+
+
+def _draw_pixels(doc, node, params, preps, region, selection, keyframe):
+    """Paint prepared commands over the layer's current pixels in `region`."""
+    doc_rect = QRect(0, 0, doc.width(), doc.height())
     canvas = imaging.read_node_image(node, region)
     before = canvas.copy()
     canvas = canvas.convertToFormat(QImage.Format_ARGB32_Premultiplied)
@@ -1949,24 +2013,10 @@ def op_draw(params):
 
     canvas = imaging.constrain_to_selection(before, canvas, selection, region)
     from .native_commands import write_pixels
-    steps = write_pixels(doc, node, region, canvas.convertToFormat(QImage.Format_ARGB32))
+    steps = write_pixels(doc, node, region, canvas.convertToFormat(QImage.Format_ARGB32),
+                         keyframe=keyframe)
     _refresh(doc)
-
-    result = {
-        "drawn": len(preps) - skipped,
-        "selection_respected": True,
-        "undoable": True,
-        "undo_steps": steps,
-        "layer": node.name(),
-        "region": {"x": region.x(), "y": region.y(),
-                   "width": region.width(), "height": region.height()},
-        "note": "Recorded in Krita's native history as one pixel-edit command.",
-    }
-    if alpha_locked:
-        result["alpha_locked"] = True
-        if skipped:
-            result["skipped_clear"] = skipped
-    return result
+    return steps, skipped
 
 
 # --------------------------------------------------------------------------
@@ -2089,20 +2139,10 @@ def op_set_selection(params):
     mode = str(_arg(params, "mode", "rect")).lower()
 
     if mode in ("none", "deselect", "clear"):
-        cleared = False
-        action = _krita().action("deselect")
-        if action is not None:
-            action.trigger()
-            cleared = True
-        else:
-            try:
-                doc.setSelection(None)
-                cleared = True
-            except Exception:
-                pass
-        if not cleared:
-            raise OpError("Could not clear the selection; no Krita window is "
-                          "available to run the deselect action.")
+        # Not the deselect action: it acts on whichever view Krita still
+        # treats as active, so with several documents open it could clear
+        # another one and leave this selection clipping the next edit.
+        set_selection(doc, None)
         _refresh(doc)
         return {"selection": None, "undoable": True, "undo_steps": 1}
 

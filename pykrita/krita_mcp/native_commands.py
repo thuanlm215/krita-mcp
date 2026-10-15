@@ -199,11 +199,14 @@ def push(doc, restore, before, after, label, size=0):
     b._refresh(doc)
 
 
-def write_pixels(doc, node, rect, image, label="MCP draw"):
+def write_pixels(doc, node, rect, image, label="MCP draw", keyframe=None):
+    """`keyframe` opts an animated layer in: the viewing time must already sit
+    on that exact key, so the native transaction lands in its frame data."""
     b.imaging.require_pixel_ops(node)
-    if node.animated():
-        raise b.OpError("Pixel snapshot edits currently require a static layer; "
-                        "use native draw_brush for animation frames.")
+    if node.animated() and (keyframe is None or keyframe not in frames(node)
+                            or get_time(doc) != keyframe):
+        raise b.OpError("Pixel snapshot edits on an animated layer need an exact keyframe; "
+                        "use draw with `time`, or native draw_brush on the current frame.")
     image = image.convertToFormat(QImage.Format_ARGB32)
     after = b.imaging.image_bytes(image)
     return write_raw(doc,node,rect,after,label)

@@ -126,7 +126,7 @@ Draw, patch, clone, and regional filters respect selection, including soft alpha
 | `settings` | Set `fps`, `start`, and `end` as one Undo |
 | `onion` | Set `enabled` as one Undo |
 
-The first animation step uses Krita's native action and keeps the static pixels as frame 0. Blanking that frame needs `replace: true`. Native brush work can target the current animation frame. Geometric `draw` and patches require static layers. Undoing the first added frame can leave animation enabled, matching Krita.
+The first animation step uses Krita's native action and keeps the static pixels as frame 0. Blanking that frame needs `replace: true`. Native brush work can target the current animation frame. Geometric `draw` targets an exact keyframe through `time` and leaves the viewing time where it was. Patches, regional filters, and cleanup require static layers. Undoing the first added frame can leave animation enabled, matching Krita.
 
 `export_animation` writes sampled composite frames, `atlas.png`, and `manifest.json` into a new directory. Pass `start`, `end`, `step`, `columns`, and an `{x, y}` anchor in document pixels. The tool restores the previous view time and does not bake onion-skin overlays into the export. Limits are 128 samples and a 16 megapixel atlas.
 

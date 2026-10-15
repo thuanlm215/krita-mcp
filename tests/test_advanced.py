@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """End-to-end v1.2 tests against an isolated live Krita, through MCP stdio."""
 import base64
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import struct
 import unittest
 import zlib
 
+from PIL import Image
 from tests.stroke_spec import stroke_spec
 from tests.test_mcp import _image_of, _text_of
 import tests.test_workflow as workflow
@@ -229,6 +231,64 @@ class AdvancedTests(unittest.TestCase):
         path=str(Path(self.temp.name)/(self.doc+'.kra'));self.call('save_document',path=path)
         reopened=self.call('open_document',path=path);self.doc=reopened['index']
         r=self.call('animation_frame',layer='Paint');self.assertEqual(r['keyframes'],[0,4,8]);self.assertEqual(r['fps'],12)
+
+    def frame(self,t):
+        return self.call('get_image',layer='Paint',time=t,max_size=0)['content_hash']
+
+    def frame_pixel(self,t,x,y):
+        _,blocks=self.client.ok('get_image',{'document':self.doc,'layer':'Paint','time':t,'max_size':0})
+        return list(Image.open(io.BytesIO(base64.b64decode(_image_of(blocks)['data']))).convert('RGBA').getpixel((x,y)))
+
+    def test_draw_on_exact_keyframe_keeps_view_and_undo(self):
+        self.fill('red')
+        self.call('animation_frame',layer='Paint',mode='blank',time=4)
+        self.call('animation_frame',layer='Paint',mode='scrub',time=0)
+        before={t:self.frame(t) for t in (0,2,4)}
+        r=self.call('draw',layer='Paint',time=4,commands=[{'type':'fill_rect','x':10,'y':10,'w':20,'h':20,'color':'blue'}])
+        self.assertEqual((r['time'],r['undo_steps']),(4,1))
+        self.assertEqual(self.call('animation_frame',layer='Paint')['current_time'],0)
+        self.assertEqual(self.frame(0),before[0]);self.assertEqual(self.frame(2),before[2])
+        self.assertEqual(self.frame_pixel(4,15,15),[0,0,255,255]);self.assertEqual(self.frame_pixel(4,50,50)[3],0)
+        edited=self.frame(4)
+        self.assertEqual(self.call('undo')['entries_changed'],1)
+        self.assertEqual(self.frame(4),before[4]);self.assertEqual(self.frame(0),before[0])
+        self.call('redo');self.assertEqual(self.frame(4),edited);self.assertEqual(self.frame(0),before[0])
+
+    def test_draw_time_requires_exact_keyframe(self):
+        self.fill('red');square=[{'type':'fill_rect','x':0,'y':0,'w':8,'h':8,'color':'blue'}]
+        self.assertIn('has no animation',self.failed('draw',layer='Paint',time=0,commands=square))
+        self.call('animation_frame',layer='Paint',mode='blank',time=4)
+        before={t:self.frame(t) for t in (0,4)}
+        self.assertIn('pass `time`',self.failed('draw',layer='Paint',commands=square))
+        self.assertIn('shows keyframe 0',self.failed('draw',layer='Paint',time=2,commands=square))
+        self.assertEqual({t:self.frame(t) for t in (0,4)},before)
+        self.assertEqual(self.call('animation_frame',layer='Paint')['current_time'],4)
+        # Other raw pixel tools keep their static-layer guard.
+        self.failed('apply_filter',layer='Paint',filter='invert',region={'x':0,'y':0,'width':8,'height':8})
+        self.assertEqual({t:self.frame(t) for t in (0,4)},before)
+
+    def test_batch_builds_keyframes_with_one_undo_and_rollback(self):
+        self.fill('red')
+        self.call('animation_frame',layer='Paint',mode='blank',time=1)
+        base={t:self.frame(t) for t in (0,1)}
+        def dot(t,color):
+            return {'tool':'draw','arguments':{'layer':'Paint','time':t,'commands':[
+                {'type':'circle','cx':64,'cy':64,'radius':20,'fill':color}]}}
+        edits=[]
+        for t,color in ((2,'blue'),(3,'green')):
+            edits+=[{'tool':'animation_frame','arguments':{'layer':'Paint','mode':'blank','time':t}},dot(t,color)]
+        r=self.call('edit_batch',edits=edits+[dot(1,'yellow')])
+        self.assertEqual(r['undo_steps'],1)
+        self.assertEqual(self.call('animation_frame',layer='Paint')['keyframes'],[0,1,2,3])
+        for t,rgba in ((1,[255,255,0,255]),(2,[0,0,255,255]),(3,[0,128,0,255])):
+            self.assertEqual(self.frame_pixel(t,64,64),rgba)
+        self.assertEqual(self.frame_pixel(2,5,5)[3],0);self.assertEqual(self.frame(0),base[0])
+        self.call('undo')
+        self.assertEqual(self.call('animation_frame',layer='Paint')['keyframes'],[0,1])
+        self.assertEqual({t:self.frame(t) for t in (0,1)},base)
+        bad=self.client.call('edit_batch',{'document':self.doc,'edits':[dot(1,'yellow'),dot(5,'blue')]})
+        self.assertTrue(bad.get('isError'));self.assertIn('not a keyframe',_text_of(bad))
+        self.assertEqual({t:self.frame(t) for t in (0,1)},base)
 
 
     def failed(self,tool,**args):

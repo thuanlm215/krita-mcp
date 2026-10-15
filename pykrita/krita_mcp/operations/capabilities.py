@@ -112,7 +112,8 @@ def workflow_capabilities(params):
             "python_api": api, "native_helper": helper, "target": target, "features": features,
             "contracts": {
                 "pixel_edits": {"layer_types": ["paintlayer"], "color_model": "RGBA", "color_depth": "U8",
-                                "masks": False, "animation": False, "transformed_ancestors": False},
+                                "masks": False, "animation": "draw only: `time` names an exact raster keyframe",
+                                "transformed_ancestors": False},
                 "draw_brush": {"layer_types": ["paintlayer"], "color_spaces": "Krita brush-engine supported; validated RGBA/U8",
                                "masks": False, "animation": "current raster keyframe", "transformed_ancestors": False,
                                "smudge": "Uses the selected native preset; validated presets are documented, not every engine option"},

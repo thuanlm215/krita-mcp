@@ -25,7 +25,7 @@ import time
 from painter_schema import STROKE,TARGET,FRAMES
 
 SERVER_NAME = "krita"
-SERVER_VERSION = "1.6.0"
+SERVER_VERSION = "1.6.1"
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PREFERRED_PROTOCOL = "2025-06-18"
@@ -644,10 +644,14 @@ TOOLS = [
          "Paint shapes, text, gradients and bitmaps onto an RGBA/8-bit paint "
          "layer. Commands are drawn in order, so later ones sit on top. "
          "Records one native Undo command using the Linux/Krita 6.0.4 helper. "
-         "Supports static layers. Respects the active "
+         "Animated layers need `time`, the exact keyframe to paint. Respects the active "
          "selection including feathered alpha. Use draw_brush for native strokes.",
          {"document": DOCUMENT_PROP,
           "layer": LAYER_PROP,
+          "time": {"type": "integer", "minimum": 0, "maximum": 99999,
+                   "description": "Animated layers only: an existing keyframe time. A held "
+                                  "time is rejected; add a key there with animation_frame. "
+                                  "The viewing time is restored afterwards."},
           "antialias": {"type": "boolean", "default": True},
           "commands": {"type": "array", "items": DRAW_COMMAND,
                        "minItems": 1}},

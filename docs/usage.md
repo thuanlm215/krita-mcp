@@ -60,6 +60,8 @@ Geometry uses `w` and `h`. Outline thickness is `stroke_width`. Only the union o
 
 **Bitmaps.** `image` takes base64 PNG `data` or an absolute `path` to a PNG, JPEG, WebP, or BMP file of up to 48 MiB. With neither `w` nor `h` the image keeps its natural size; with one of them it keeps its aspect ratio. `svg` takes `svg` markup or an absolute `.svg` `path` (up to 8 MiB) and rasterises it the same way. It needs Qt's SVG module, which Krita builds normally ship; without it the command returns `unsupported`.
 
+**Animation frames.** On an animated layer, `draw` needs `time`, which must be an existing keyframe. It paints that key's pixels and puts the viewing time back afterwards. A held time is rejected with the key that shows there. Create a key at that time first with `animation_frame` `blank` or `duplicate`. In `edit_batch`, `animation_frame` followed by `draw` with the same `time` builds a frame as one Undo. Passing `time` for a static layer is an error.
+
 **Alpha lock.** `create_layer` and `set_layer` take `alpha_locked` and `inherit_alpha`. On an alpha-locked layer, `draw` and `draw_brush` change colour only where pixels already exist, and `draw` skips `clear` commands. Layer listings show both flags only when they are set.
 
 **Native strokes.** `draw_brush` rejects a point outside the canvas and names it. Pass `clamp: true` to pull such points onto the nearest edge. Pass `strokes` instead of `points` to paint up to 64 strokes in one call and one Undo entry. Each stroke may set its own `color`, `size`, `opacity`, and `erase`; unset values come from the top level. One preset and mode apply to every stroke.
