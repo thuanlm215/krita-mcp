@@ -113,6 +113,34 @@ class AdvancedTests(unittest.TestCase):
             {'tool':'draw','arguments':{'layer':'Temporary','commands':[{'type':'invalid'}]}}]})
         self.assertTrue(bad.get('isError'));self.assertEqual(self.call('inspect_document')['layers'],tree_after)
 
+    def test_batch_results_summary_full_and_none(self):
+        edits=[{'tool':'create_layer','arguments':{'name':'Brief'}},
+               {'tool':'draw','arguments':{'layer':'Brief','commands':[
+                   {'type':'fill_rect','x':4,'y':6,'w':10,'h':8,'color':'red'}]}},
+               {'tool':'select_polygon','arguments':{'points':[[0,0],[20,0],[20,20],[0,20]],'antialias':False}},
+               {'tool':'set_selection','arguments':{'mode':'none'}}]
+        before=self.digest();tree=self.authored_tree()
+        r=self.call('edit_batch',edits=edits)
+        self.assertEqual((r['edits'],r['undo_steps'],r['rollback_on_error']),(4,1,True))
+        created,drawn,selected,cleared=r['results']
+        self.assertEqual(created,{'tool':'create_layer','layer':'Brief'})
+        self.assertEqual((drawn['tool'],drawn['layer']),('draw','Brief'))
+        self.assertTrue(isinstance(drawn['region'],list) and len(drawn['region'])==4)
+        for receipt in ('undoable','undo_steps','note','selection_respected'):
+            self.assertNotIn(receipt,drawn)
+        self.assertEqual(selected['selection'],[0,0,20,20])
+        self.assertEqual(cleared,{'tool':'set_selection','selection':None})
+        after=self.digest();self.call('undo');self.assertEqual(self.digest(),before)
+        full=self.call('edit_batch',edits=edits,results='full')
+        self.assertEqual(full['results'][0]['result']['layer']['name'],'Brief')
+        self.assertTrue(full['results'][1]['result']['undoable']);self.assertEqual(self.digest(),after)
+        self.call('undo')
+        quiet=self.call('edit_batch',edits=edits,results='none')
+        self.assertNotIn('results',quiet);self.assertEqual(quiet['undo_steps'],1)
+        self.call('undo');self.assertEqual(self.authored_tree(),tree)
+        self.assertIn('results must be one of',self.failed('edit_batch',edits=edits,results='brief'))
+        self.assertEqual(self.digest(),before);self.assertEqual(self.authored_tree(),tree)
+
     def test_alpha_color_contiguous_and_imported_mask(self):
         self.draw_rect(10,10,20,20,[255,0,0,128]);self.draw_rect(80,80,20,20,[255,0,0,128])
         self.call('select_content',layer='Paint',mode='alpha')

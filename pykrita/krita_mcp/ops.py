@@ -44,7 +44,7 @@ from .compat import (
 from . import imaging
 from .imaging import ImagingError, parse_color
 
-PLUGIN_VERSION = "1.6.1"
+PLUGIN_VERSION = "1.7.0"
 
 OPS = {}
 

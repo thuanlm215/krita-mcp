@@ -25,7 +25,7 @@ import time
 from painter_schema import STROKE,TARGET,FRAMES
 
 SERVER_NAME = "krita"
-SERVER_VERSION = "1.6.1"
+SERVER_VERSION = "1.7.0"
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PREFERRED_PROTOCOL = "2025-06-18"
@@ -803,6 +803,10 @@ TOOLS = [
          "and blank/duplicate frames. "
          "A new edit discards an existing redo branch according to Krita's normal history behavior.",
          {"document": DOCUMENT_PROP, "label": {"type": "string"},
+          "results": {"type": "string", "enum": ["summary", "full", "none"], "default": "summary",
+                      "description": "summary: each edit's own facts (layer name, region as [x, y, w, h]) "
+                                     "without the per-edit Undo receipt; full: every tool's complete result; "
+                                     "none: only the batch receipt."},
           "edits": {"type": "array", "minItems": 1, "maxItems": 64, "items": {
               "type": "object", "properties": {"tool": {"type": "string"}, "arguments": {"type": "object"}},
               "required": ["tool"], "additionalProperties": False}}}, required=["edits"]),
@@ -1057,8 +1061,29 @@ def _image_metadata(value):
     return value
 
 
+def _dump(value, indent=0, lead=0, width=100):
+    """JSON text that keeps a container on one line while it fits in `width`.
+
+    Plain indent=2 puts every number of a rectangle on its own line, which
+    multiplies the lines a caller has to read; the data stays the same.
+    """
+    flat = json.dumps(value, ensure_ascii=False, default=str)
+    if not isinstance(value, (dict, list)) or not value or indent + lead + len(flat) <= width:
+        return flat
+    pad = " " * (indent + 2)
+    if isinstance(value, dict):
+        lines = []
+        for key, item in value.items():
+            name = json.dumps(str(key), ensure_ascii=False) + ": "
+            lines.append(pad + name + _dump(item, indent + 2, len(name), width))
+    else:
+        lines = [pad + _dump(item, indent + 2, 0, width) for item in value]
+    opener, closer = ("{", "}") if isinstance(value, dict) else ("[", "]")
+    return opener + "\n" + ",\n".join(lines) + "\n" + " " * indent + closer
+
+
 def _summarise(result):
-    return json.dumps(_image_metadata(result), indent=2, ensure_ascii=False, default=str)
+    return _dump(_image_metadata(result))
 
 
 MAX_PARAMS_FILE_BYTES = 32 * 1024 * 1024

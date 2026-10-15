@@ -16,6 +16,24 @@ SNAPSHOTS = getattr(builtins,"_krita_mcp_preview_snapshots",None)
 if SNAPSHOTS is None:
     SNAPSHOTS={}; builtins._krita_mcp_preview_snapshots=SNAPSHOTS
 
+RESULT_MODES = ("summary", "full", "none")
+# Receipt fields every edit repeats; the batch reports them once for the group.
+RECEIPT_KEYS = {"undoable", "undo_steps", "note", "elapsed_ms", "rollback_on_error", "document", "layers"}
+
+
+def brief(value):
+    """One edit's result without its receipt: a layer by name, a rectangle as [x, y, w, h]."""
+    if isinstance(value, dict):
+        if {"name", "uuid", "type"} <= value.keys():
+            return value["name"]
+        if set(value) == {"x", "y", "width", "height"}:
+            return [value["x"], value["y"], value["width"], value["height"]]
+        return {k: brief(v) for k, v in value.items()
+                if k not in RECEIPT_KEYS and not (k in ("selection_respected", "created") and v is True)}
+    if isinstance(value, list):
+        return [brief(v) for v in value] if len(value) <= 16 else "{0} items".format(len(value))
+    return value
+
 
 def edit_batch(params):
     from ..native_commands import group, stack
@@ -23,6 +41,9 @@ def edit_batch(params):
     edits=b._req(params,"edits")
     if not isinstance(edits,list) or not 1<=len(edits)<=64:
         raise b.OpError("edits must contain 1 to 64 operations")
+    mode=b._arg(params,"results","summary")
+    if mode not in RESULT_MODES:
+        raise b.OpError("results must be one of: "+", ".join(RESULT_MODES))
     prepared=[]
     for edit in edits:
         if isinstance(edit, dict) and edit.get("tool") == "warp_layer":
@@ -54,8 +75,17 @@ def edit_batch(params):
         if node is not None: doc.setActiveNode(node)
         b._refresh(doc)
         raise
-    return {"results":result,"undoable":True,"undo_steps":int(lib.mcp_index(ptr)>index),
-            "rollback_on_error":True}
+    out={"edits":len(result),"undoable":True,"undo_steps":int(lib.mcp_index(ptr)>index),
+         "rollback_on_error":True}
+    if mode=="full":
+        out["results"]=result
+    elif mode=="summary":
+        out["results"]=[]
+        for entry in result:
+            short=brief(entry["result"])
+            out["results"].append(dict({"tool":entry["tool"]},**short) if isinstance(short,dict)
+                                  else {"tool":entry["tool"],"result":short})
+    return out
 
 
 def mask_layer(params):

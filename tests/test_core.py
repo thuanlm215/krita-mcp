@@ -243,6 +243,30 @@ class AssetToolTests(unittest.TestCase):
         self.assertIn("row", tools["slice_sheet"]["inputSchema"]["properties"]["align"]["enum"])
         self.assertTrue({"accents", "despeckle"} <= set(tools["quantize_layer"]["inputSchema"]["properties"]))
 
+    def test_batch_summary_drops_receipts_and_keeps_facts(self):
+        editing = importlib.import_module(package.__name__ + ".operations.editing")
+        schema = mcp_server.TOOLS_BY_NAME["edit_batch"]["inputSchema"]["properties"]["results"]
+        self.assertEqual((schema["enum"], schema["default"]), (["summary", "full", "none"], "summary"))
+        layer = {"name": "Boots", "type": "paintlayer", "uuid": "u", "bounds": {"x": 0, "y": 0, "width": 0, "height": 0}}
+        self.assertEqual(editing.brief({"created": True, "layer": layer}), {"layer": "Boots"})
+        self.assertEqual(editing.brief({"drawn": 3, "selection_respected": True, "undoable": True, "undo_steps": 1,
+                                        "layer": "Boots", "region": {"x": 1, "y": 2, "width": 3, "height": 4},
+                                        "note": "Recorded ..."}),
+                         {"drawn": 3, "layer": "Boots", "region": [1, 2, 3, 4]})
+        self.assertEqual(editing.brief({"selection_respected": False, "palette": list(range(20))}),
+                         {"selection_respected": False, "palette": "20 items"})
+
+    def test_results_keep_short_containers_on_one_line(self):
+        result = {"results": [{"tool": "draw", "region": [304, 1172, 143, 139]}],
+                  "layer": {"name": "x" * 60, "bounds": {"x": 0, "y": 0, "width": 10, "height": 12}, "z": "y" * 40}}
+        text = mcp_server._summarise(result)
+        self.assertEqual(json.loads(text), result)
+        self.assertIn('"region": [304, 1172, 143, 139]', text)
+        self.assertIn('"bounds": {"x": 0, "y": 0, "width": 10, "height": 12}', text)
+        self.assertTrue(all(len(line) <= 100 for line in text.splitlines()), text)
+        for value in ([], {}, {"k": {}}, [[1, 2]] * 40, {"s": "x" * 300}):
+            self.assertEqual(json.loads(mcp_server._summarise(value)), value)
+
     def test_insert_node_reaches_every_docker_position(self):
         class Node:
             def __init__(self, name):

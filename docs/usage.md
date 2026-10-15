@@ -68,6 +68,8 @@ Geometry uses `w` and `h`. Outline thickness is `stroke_width`. Only the union o
 
 **Layer results.** `create_layer`, `duplicate_layer`, `move_layer`, and `merge_layer_down` return the affected layer as `layer`; `delete_layer` returns the deleted name. Pass `include_tree: true` to also get the whole tree as `layers`, or call `inspect_document`. A negative `index` counts from the bottom of the parent, so `-1` is the bottom.
 
+**Batch results.** `edit_batch` returns the batch receipt once, plus a summary per edit: the layer it touched, its region as `[x, y, w, h]`, and the tool's own counts, without the Undo receipt every tool repeats. Pass `results: "full"` for each tool's complete reply, or `"none"` for the receipt alone. Every reply is JSON in which an array or object that fits on one line stays on one line.
+
 **File layers.** `create_layer` with `type: "filelayer"` and an absolute `path` links an image file. Krita reloads the layer when the file changes. `scaling` is `none`, `to_image_size`, or `to_ppi`. The result reports whether the file finished loading. `get_pixel` reads what a file, fill, clone, vector, or group layer renders.
 
 ## Game assets

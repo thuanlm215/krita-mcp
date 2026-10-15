@@ -53,6 +53,8 @@ Brush example:
 
 `edit_batch` runs several of these tools as one native Undo group. On an operation error it undoes the group and discards that group's redo entry. It rejects file I/O, history actions, and nested batches. A batch accepts up to 64 edits. Starting a batch discards an existing redo branch.
 
+The reply carries the batch receipt once (`edits`, `undo_steps`, `rollback_on_error`) and, by default, `results: "summary"`. Each edit then reports only its own facts: `{"tool": "draw", "drawn": 26, "layer": "Boots", "region": [304, 1172, 143, 139]}`. A created layer appears by name, rectangles appear as `[x, y, w, h]`, and the Undo receipt each tool would repeat is left out. Pass `results: "full"` for every tool's complete result, or `"none"` for the receipt alone.
+
 ```json
 {
   "label": "Pose selected forearm",
