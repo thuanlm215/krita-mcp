@@ -92,6 +92,16 @@ Preview matches apply for the same unchanged source and selection, and it does n
 
 `undo` and `redo` share history with manual edits. These counts were checked on Krita 6.0.4.
 
+## Generated image to game sprite
+
+1. `create_document` at the source size, then `draw` an `image` command with the generated file's `path` onto a paint layer.
+2. `remove_background`, with `holes` to clear backdrop between limbs. Check edges against a contrasting backdrop with `get_image`; raise `tolerance` a little for a noisy backdrop, `softness` for a softer matte, or `shrink: 1` for a stubborn halo.
+3. For a sheet, `slice_sheet` with `columns` set to the frames per row, and `output: "layers"` to repair cells in place, or `output: "files"` with `uniform` and `align: "bottom"` for engine frames. `import_animation` takes those files back as a timeline.
+4. `quantize_layer` with the game's `palette` to pull stray colours onto it, or `mode: "swap"` for colour variants.
+5. `outline_layer` for a consistent sprite outline, then `export_layers`.
+
+Wrap steps 2 and 4 in one `edit_batch` to undo them together.
+
 ## Texture, masks, and review
 
 - `texture_patch` takes `data` (base64 PNG), `data_path` (an absolute image path), or `source_layer`, an optional `source_region`, a destination `region`, `opacity`, and optional `mask_data` or `mask_path`. An explicit mask matches the destination size. `mask_channel` is `alpha` or `luminance`.

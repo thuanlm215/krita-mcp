@@ -70,6 +70,7 @@ try:
             "Format_RGBA8888",
             "Format_Grayscale8",
             "Format_Alpha8",
+            "Format_Indexed8",
         ):
             if hasattr(QImage.Format, attr):
                 setattr(QImage, attr, getattr(QImage.Format, attr))

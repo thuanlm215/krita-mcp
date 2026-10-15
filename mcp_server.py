@@ -784,7 +784,8 @@ TOOLS = [
 
     tool("edit_batch", "Apply up to 64 edits to one document as one native Undo group. "
          "On error, undo the group and discard its redo. Supports draw/brush, selection, extraction, "
-         "transform apply, patch/clone, mask, bake, outline, layer creation, filters and blank/duplicate frames. "
+         "transform apply, patch/clone, mask, bake, outline, background removal, recolouring, layer creation, filters "
+         "and blank/duplicate frames. "
          "A new edit discards an existing redo branch according to Krita's normal history behavior.",
          {"document": DOCUMENT_PROP, "label": {"type": "string"},
           "edits": {"type": "array", "minItems": 1, "maxItems": 64, "items": {
@@ -829,6 +830,95 @@ TOOLS = [
                    "description": "false exports full-canvas images."},
           "padding": {"type": "integer", "minimum": 0, "maximum": 512, "default": 0}},
          required=["directory"]),
+
+    tool("slice_sheet", "Cut a sprite sheet into cells. The sheet is a layer, or an "
+         "image file (`path`) or base64 PNG (`data`). auto mode splits at empty rows "
+         "and columns of transparency or of the background colour and trims each "
+         "cell; with columns it cuts each sprite row into that many frames. grid "
+         "mode uses columns x rows. output layers puts each cell on its "
+         "own layer, in place, inside a new group (one Undo); output files writes "
+         "PNGs and manifest.json into a new directory, optionally as uniform frames "
+         "ready for import_animation.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP sheet; instead of layer."},
+          "data": {"type": "string", "description": "Base64 PNG sheet; instead of layer."},
+          "mode": {"type": "string", "enum": ["auto", "grid"], "default": "auto"},
+          "background": {"type": ["string", "array"], "default": "auto",
+                         "description": "auto (alpha if the sheet has any transparency, "
+                                        "else the corner colour), transparent, or a colour."},
+          "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 24,
+                        "description": "Per-channel distance still counted as background colour."},
+          "threshold": {"type": "integer", "minimum": 1, "maximum": 255, "default": 16,
+                        "description": "Lowest alpha counted as content."},
+          "min_gap": {"type": "integer", "minimum": 1, "default": 2,
+                      "description": "auto: empty pixels needed between cells. Raise it to "
+                                     "keep detached parts, such as a held sword, together."},
+          "min_pixels": {"type": "integer", "minimum": 1, "default": 16,
+                         "description": "Cells with fewer content pixels are dropped as specks."},
+          "columns": {"type": "integer", "minimum": 1, "maximum": 256,
+                      "description": "grid: cells per row. auto: frames per sprite row; a row "
+                                     "without that many clean gaps is cut at its emptiest "
+                                     "columns, for frames whose effects or ground overlap."},
+          "rows": {"type": "integer", "minimum": 1, "maximum": 256},
+          "margin": {"type": "integer", "minimum": 0, "default": 0},
+          "spacing": {"type": "integer", "minimum": 0, "default": 0},
+          "trim": {"type": "boolean", "default": True,
+                   "description": "grid: crop each cell to its content."},
+          "output": {"type": "string", "enum": ["layers", "files"], "default": "layers"},
+          "name": {"type": "string", "description": "layers: group name."},
+          "directory": {"type": "string", "description": "files: absolute path of a new directory."},
+          "prefix": {"type": "string", "default": "cell"},
+          "uniform": {"type": "boolean", "default": False,
+                      "description": "files: pad every PNG to the largest cell size."},
+          "align": {"type": "string", "enum": ["center", "bottom"], "default": "center",
+                    "description": "files with uniform: where a cell sits in its frame; "
+                                   "bottom keeps feet on one baseline."},
+          "padding": {"type": "integer", "minimum": 0, "maximum": 512, "default": 0}}),
+
+    tool("remove_background", "Make a solid background transparent on a paint layer. "
+         "The colour defaults to the corners; contiguous mode clears only background "
+         "connected to the layer edge, so enclosed areas of the same colour survive. "
+         "softness gives a soft matte, and defringe removes the background colour "
+         "left in semi-transparent edges. mode defringe only cleans edges of an "
+         "already transparent image. Respects selection; one native Undo.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "mode": {"type": "string", "enum": ["contiguous", "global", "defringe"],
+                   "default": "contiguous"},
+          "color": {"type": ["string", "array"],
+                    "description": "Background colour; default auto from the corners. "
+                                   "Required for mode defringe."},
+          "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 12,
+                        "description": "Largest per-channel distance cleared completely. "
+                                       "Raise it slowly: art close to the backdrop colour goes first."},
+          "softness": {"type": "integer", "minimum": 0, "maximum": 255, "default": 12,
+                       "description": "Distance band above tolerance that fades to opaque."},
+          "holes": {"type": "integer", "minimum": 0, "default": 0,
+                    "description": "contiguous: also clear enclosed background areas of at least "
+                                   "this many pixels, such as backdrop between legs. 0 keeps them."},
+          "defringe": {"type": "boolean", "default": True},
+          "shrink": {"type": "integer", "minimum": 0, "maximum": 8, "default": 0,
+                     "description": "Erode the remaining alpha by this many pixels to cut a halo."}}),
+
+    tool("quantize_layer", "Recolour a paint layer. quantize maps every pixel to the "
+         "nearest colour of `palette`, or of `colors` median-cut colours, with optional "
+         "ordered dithering; `replace` then swaps palette entries by position for "
+         "colour variants. swap shifts only pixels within `tolerance` of each palette "
+         "colour by the difference to its replace colour, keeping their shading. "
+         "Alpha is kept unless alpha is threshold. Respects selection; one native Undo.",
+         {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
+          "mode": {"type": "string", "enum": ["quantize", "swap"], "default": "quantize"},
+          "palette": {"type": "array", "items": {"type": ["string", "array"]},
+                      "minItems": 1, "maxItems": 256},
+          "colors": {"type": "integer", "minimum": 2, "maximum": 256,
+                     "description": "quantize: build this many colours instead of palette."},
+          "replace": {"type": "array", "items": {"type": ["string", "array"]},
+                      "minItems": 1, "maxItems": 256,
+                      "description": "Same length as palette."},
+          "dither": {"type": "string", "enum": ["none", "ordered"], "default": "none"},
+          "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 32,
+                        "description": "swap: per-channel distance from a palette colour."},
+          "alpha": {"type": "string", "enum": ["keep", "threshold"], "default": "keep",
+                    "description": "threshold makes alpha 0 or 255 at 128, for pixel art."}}),
 
     tool("preview_changes", "Capture a composite checkpoint, compare before/after with a "
          "difference map, or discard it. Panels: before, after, magenta changed pixels. "

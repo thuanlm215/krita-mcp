@@ -1,6 +1,6 @@
 # Using Krita MCP
 
-Version 1.4 exposes 54 tools and 63 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
+Version 1.4 exposes 57 tools and 66 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
 
 ## Tools
 
@@ -30,6 +30,8 @@ Version 1.4 exposes 54 tools and 63 bridge operations. Reconnect the MCP client 
 | `texture_patch` / `clone_stamp` | Masked texture placement and sampled cloning |
 | `mask_layer` / `bake_layer` | Transparency masks and baked paint layers |
 | `outline_layer` / `export_layers` | Antialiased sprite outlines; one trimmed PNG per layer with a manifest |
+| `slice_sheet` | Cut a sprite sheet into trimmed cells, as layers or as PNG files with a manifest |
+| `remove_background` / `quantize_layer` | Clear a solid background and defringe its edges; map to a palette or swap colours |
 | `edit_batch` / `preview_changes` | One Undo group with rollback, and before/after/difference |
 | `animation_frame` / `export_animation` | Raster keyframes, onion skin, FPS, PNG sequence, atlas, manifest |
 | `import_animation` / `animation_review` | Registered PNG import and previous/current/next panels |
@@ -69,6 +71,12 @@ Geometry uses `w` and `h`. Outline thickness is `stroke_width`. Only the union o
 `outline_layer` traces the rendered alpha of a layer onto a new paint layer. `width` is 0.5 to 32 pixels. `position` `outside` (the default) puts the outline under the source and fills beneath it, so antialiased source edges leave no seam. `inside` and `center` put it above the source. `antialias: false` gives a hard pixel-art outline from alpha 128 and up, four-connected at width 1. The source is untouched, and the new layer is one Undo entry.
 
 `export_layers` writes one PNG per layer and a `manifest.json` into a new directory. It exports the visible top-level layers unless `layers` names others. `trim` (default `true`) crops each PNG to its exact alpha bounds. `padding` adds a transparent margin. The manifest gives each file's canvas `x` and `y`, which can be negative after padding, so an engine can place the parts back where they were drawn. The document is not changed.
+
+`slice_sheet` cuts a sprite sheet into cells. The sheet is a layer, or an image `path` or `data` that never enters the document. `auto` mode splits at empty rows and columns, then trims each cell. Empty means transparent, or within `tolerance` of the `background` colour, which defaults to the corners of an opaque sheet. Raise `min_gap` to keep detached parts such as a held sword in one cell; cells under `min_pixels` are dropped as specks. Generated sheets often have no clean gap: a slash reaches over the next figure, or one ground line runs under every frame. Pass `columns` with the number of frames per row. A row without that many gaps is then cut at its emptiest columns, and each connected part goes whole to the frame that holds most of it, so a slash or a flash stays with the figure that casts it. Only a part that spans two frames' worth of pixels, such as that ground line, is cut at the columns. Cells cut this way carry `row` and `column`, and their images hold only their own pixels even where boxes overlap. Rows narrower than half the widest, such as a title or frame numbers, are split as usual; raise `min_pixels` to drop numbers. `grid` mode uses `columns` and `rows`, with optional `margin` and `spacing`, and trims each cell unless `trim` is `false`. `output: "layers"` puts each cell on its own layer, in place, inside a new group: one Undo entry. `output: "files"` writes PNGs and `manifest.json` into a new `directory`. There, `uniform` pads every PNG to the largest cell, and `align: "bottom"` keeps feet on one baseline. Slicing does not remove an opaque background; run `remove_background` first.
+
+`remove_background` makes a solid background transparent. The colour defaults to the median of the corners. `contiguous` mode (the default) clears only background connected to the layer edge, so an enclosed area of the same colour, such as the white of an eye, survives; `global` clears every match. Distances up to `tolerance` (default 12) clear completely and `softness` (default 12) fades the next band, for a soft matte. Raise them slowly: on generated art, pale cloth on a grey backdrop or dark armour on a black one starts to vanish around 16. `holes` also clears enclosed background areas of at least that many pixels, such as backdrop seen between legs; `1000` to `2000` suits a figure about 500 pixels tall. `defringe` (default `true`) re-estimates each edge pixel as a mix of the nearest solid colour and the background, then takes the background out, so no light halo remains on a dark backdrop. `shrink` erodes alpha by up to 8 pixels. `mode: "defringe"` only cleans the edges of an image that is already transparent, and needs the old background `color`.
+
+`quantize_layer` `quantize` mode maps every pixel to the nearest colour of `palette`, or of `colors` median-cut colours, with optional `dither: "ordered"` (4x4 Bayer). `replace`, as long as the palette, then swaps entries by position, for a palette variant. `swap` mode shifts only pixels within `tolerance` of each `palette` colour by the difference to its `replace` colour, so shading inside the match survives: a red tunic becomes a blue one. Alpha is kept unless `alpha: "threshold"` cuts it at 128 for pixel art. Both tools respect the selection, make one Undo entry, and work inside `edit_batch`.
 
 ## Files instead of inline data
 

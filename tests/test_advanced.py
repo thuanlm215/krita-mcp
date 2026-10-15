@@ -452,4 +452,111 @@ class AdvancedTests(unittest.TestCase):
         pixel=self.client.ok('get_pixel',{'document':large,'layer':'Paint','x':700,'y':500})[0]
         self.assertEqual(pixel['rgba'][3],255)
 
+    def test_slice_sheet_into_layers_and_files(self):
+        from PIL import Image
+        for box,color in (((10,10,20,30),'red'),((50,12,15,20),'blue'),((90,80,25,25),'lime'),((70,100,2,2),'red')):
+            self.draw_rect(*box,color)
+        r=self.call('slice_sheet',layer='Paint')
+        self.assertEqual((r['cells'],r['undo_steps'],r['background']),(3,1,'transparent'))
+        box=lambda c:[c[k] for k in ('x','y','width','height')]
+        self.assertEqual([box(c) for c in r['boxes']],[[10,10,20,30],[50,12,15,20],[90,80,25,25]])
+        self.assertEqual(self.layer_names()[0],'Paint slices')
+        self.assertEqual(self.pixel(15,15,'Paint slices 001'),[255,0,0,255])
+        self.assertEqual(self.alpha_at(55,15,'Paint slices 001'),0)
+        self.assertEqual(self.pixel(100,90,'Paint slices 003'),[0,255,0,255])
+        self.call('undo');self.assertNotIn('Paint slices',self.layer_names())
+        sheet=Path(self.temp.name)/self.doc/'sheet.png';sheet.parent.mkdir(exist_ok=True)
+        image=Image.new('RGBA',(64,32),(255,255,255,255))
+        image.paste((255,0,0,255),(4,4,14,14));image.paste((0,0,255,255),(40,8,52,28))
+        image.save(sheet)
+        out=Path(self.temp.name)/self.doc/'frames'
+        r=self.call('slice_sheet',path=str(sheet),output='files',directory=str(out),
+                    uniform=True,align='bottom',padding=1)
+        self.assertEqual((r['cells'],r['background'],r['mutated']),(2,'#ffffff',False))
+        manifest=json.loads((out/'manifest.json').read_text())
+        self.assertEqual(manifest['frame'],{'width':14,'height':22})
+        first=manifest['cells'][0]
+        self.assertEqual((first['offset_x'],first['offset_y']),(2,11))
+        with Image.open(out/first['file']) as frame:
+            rgba=frame.convert('RGBA');self.assertEqual(rgba.size,(14,22))
+            self.assertEqual(rgba.getpixel((2,11)),(255,0,0,255));self.assertEqual(rgba.getpixel((1,11))[3],0)
+        grid=Path(self.temp.name)/self.doc/'grid'
+        self.call('slice_sheet',path=str(sheet),mode='grid',columns=2,rows=1,output='files',directory=str(grid))
+        cells=json.loads((grid/'manifest.json').read_text())['cells']
+        self.assertEqual([(c['column'],box(c)) for c in cells],[(0,[4,4,10,10]),(1,[40,8,12,20])])
+        self.assertIn('not both',self.failed('slice_sheet',layer='Paint',path=str(sheet)))
+        # columns: a slash over the next figure's columns stays with its caster.
+        overlap=Path(self.temp.name)/self.doc/'overlap.png'
+        image=Image.new('RGBA',(120,60),(0,0,0,0))
+        for rect,color in (((5,10,25,50),(255,0,0,255)),((20,5,70,8),(255,0,0,255)),((20,5,25,10),(255,0,0,255)),
+                           ((55,10,75,50),(0,0,255,255)),((95,10,115,50),(0,255,0,255))):
+            image.paste(color,rect)
+        image.save(overlap)
+        r=self.call('slice_sheet',path=str(overlap),columns=3,name='Frames')
+        self.assertEqual([(c['column'],box(c)) for c in r['boxes']],
+                         [(0,[5,5,65,45]),(1,[55,10,20,40]),(2,[95,10,20,40])])
+        self.assertEqual(self.pixel(60,6,'Frames 001'),[255,0,0,255])
+        self.assertEqual(self.alpha_at(60,6,'Frames 002'),0)
+        self.assertEqual(self.pixel(60,20,'Frames 002'),[0,0,255,255])
+
+    def test_remove_background_keeps_enclosed_colour_and_cleans_edges(self):
+        self.fill('white')
+        self.call('draw',layer='Paint',commands=[
+            {'type':'ellipse','x':24,'y':24,'w':80,'h':80,'fill':[200,30,30,255]},
+            {'type':'ellipse','x':54,'y':54,'w':20,'h':20,'fill':'white'}])
+        before=self.digest()
+        r=self.call('remove_background',layer='Paint')
+        self.assertEqual((r['background'],r['undo_steps']),('#ffffff',1))
+        self.assertGreater(r['cleared_pixels'],8000);self.assertGreater(r['softened_pixels'],50)
+        self.assertEqual(self.alpha_at(2,2),0)
+        self.assertEqual(self.pixel(64,64),[255,255,255,255])
+        self.assertEqual(self.pixel(40,64),[200,30,30,255])
+        raw=bytes.fromhex(self.fixture('pixels'))
+        rim=[raw[i:i+4] for i in range(0,len(raw),4) if 0<raw[i+3]<255]
+        self.assertGreater(len(rim),50)
+        # BGRA: a rim pixel keeps the red, without the white it was blended with.
+        self.assertLess(max(min(p[0],p[1]) for p in rim),60)
+        self.assertIn('already transparent',self.failed('remove_background',layer='Paint'))
+        self.call('undo');self.assertEqual(self.digest(),before)
+        self.call('remove_background',layer='Paint',mode='global')
+        self.assertEqual(self.alpha_at(64,64),0)
+        self.assertIn('needs the old background',self.failed('remove_background',layer='Paint',mode='defringe'))
+
+    def test_quantize_layer_palette_colours_and_swap(self):
+        self.call('draw',layer='Paint',commands=[{'type':'linear_gradient','x':0,'y':0,'w':128,'h':128,
+                  'stops':[[0,'black'],[1,'white']]}])
+        before=self.digest()
+        r=self.call('quantize_layer',layer='Paint',palette=['#000','#555','#aaa','#fff'])
+        self.assertEqual(r['undo_steps'],1)
+        channels=lambda:set(bytes.fromhex(self.fixture('pixels'))[0::4])
+        self.assertEqual(channels(),{0,85,170,255})
+        self.call('undo');self.assertEqual(self.digest(),before)
+        r=self.call('quantize_layer',layer='Paint',colors=3,dither='ordered')
+        self.assertEqual(len(r['palette']),3);self.assertLessEqual(len(channels()),3)
+        self.call('undo')
+        self.call('quantize_layer',layer='Paint',palette=['#000','#fff'],replace=['red','blue'])
+        self.assertEqual(self.pixel(2,64),[255,0,0,255]);self.assertEqual(self.pixel(125,64),[0,0,255,255])
+        self.call('create_layer',name='Sprite')
+        self.draw_rect(10,10,20,20,[200,40,40,255],layer='Sprite')
+        self.draw_rect(10,40,20,20,[210,50,50,100],layer='Sprite')
+        faint=self.pixel(15,45,'Sprite')
+        r=self.call('quantize_layer',layer='Sprite',mode='swap',palette=[[200,40,40]],
+                    replace=[[40,40,200]],tolerance=16)
+        self.assertEqual(r['swapped_pixels'],[800])
+        self.assertEqual(self.pixel(15,15,'Sprite'),[40,40,200,255])
+        # Shifted by the same difference, so shading and alpha survive.
+        self.assertEqual(self.pixel(15,45,'Sprite'),[faint[0]-160,faint[1],faint[2]+160,faint[3]])
+        self.call('quantize_layer',layer='Sprite',palette=['#2828c8','#3232d2'],alpha='threshold')
+        self.assertEqual(self.alpha_at(15,45,'Sprite'),0);self.assertEqual(self.alpha_at(15,15,'Sprite'),255)
+        self.assertIn('not both',self.failed('quantize_layer',layer='Sprite',palette=['#000'],colors=4))
+
+    def test_cleanup_tools_share_one_batch_undo(self):
+        self.fill('white');self.draw_rect(30,30,40,40,[200,40,40,255]);before=self.digest()
+        r=self.call('edit_batch',edits=[
+            {'tool':'remove_background','arguments':{'layer':'Paint'}},
+            {'tool':'quantize_layer','arguments':{'layer':'Paint','palette':['#2828c8']}}])
+        self.assertEqual(r['undo_steps'],1)
+        self.assertEqual(self.alpha_at(5,5),0);self.assertEqual(self.pixel(50,50),[40,40,200,255])
+        self.call('undo');self.assertEqual(self.digest(),before)
+
 if __name__=='__main__':unittest.main(verbosity=2)

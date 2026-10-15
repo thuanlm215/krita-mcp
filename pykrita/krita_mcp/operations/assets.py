@@ -1,4 +1,5 @@
-"""Game-asset helpers: antialiased layer outlines and per-layer PNG export."""
+"""Game-asset helpers: outlines, per-layer PNG export and sprite-sheet slicing."""
+import bisect
 import json
 import math
 from pathlib import Path
@@ -223,5 +224,459 @@ def export_layers(params):
             "layers": entries, "skipped_empty": skipped, "mutated": False}
 
 
+MAX_SLICES = 1024
+MAX_SLICE_LAYERS = 256
+
+
+def _corner_color(raw, width, height):
+    """Median colour of 3x3 patches at the four corners, as (r, g, b, a)."""
+    samples = []
+    for cx, cy in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)):
+        for y in range(max(0, cy - 1), min(height, cy + 2)):
+            for x in range(max(0, cx - 1), min(width, cx + 2)):
+                i = (y * width + x) * 4
+                samples.append((raw[i + 2], raw[i + 1], raw[i], raw[i + 3]))
+    return tuple(sorted(s[k] for s in samples)[len(samples) // 2] for k in range(4))
+
+
+def _near_tables(color, tolerance):
+    """Per channel, 1 where a byte is within tolerance of the colour."""
+    return [bytes(1 if abs(v - c) <= tolerance else 0 for v in range(256)) for c in color[:3]]
+
+
+def _bitwise(parts, op, length):
+    value = int.from_bytes(parts[0], "big")
+    for part in parts[1:]:
+        value = op(value, int.from_bytes(part, "big"))
+    return value.to_bytes(length, "big")
+
+
+def _content_mask(raw, width, height, background, threshold, tolerance):
+    """One byte per pixel, 1 where the sheet has content."""
+    alpha = raw[3::4]
+    solid = bytes(0 if a < threshold else 1 for a in range(256))
+    mask = alpha.translate(solid)
+    if background is None:
+        return mask, None
+    near = _near_tables(background, tolerance)
+    planes = [raw[2::4].translate(near[0]), raw[1::4].translate(near[1]), raw[0::4].translate(near[2])]
+    # Content differs from the background in some channel and is not see-through.
+    same = _bitwise(planes, lambda a, b: a & b, len(alpha))
+    differs = same.translate(bytes([1, 0]) + bytes(254))
+    return _bitwise([differs, mask], lambda a, b: a & b, len(alpha)), background
+
+
+def _runs(flags, gap):
+    """Occupied index runs; empty stretches shorter than ``gap`` do not split."""
+    runs, start, last = [], None, None
+    for index, occupied in enumerate(flags):
+        if not occupied:
+            continue
+        if start is None:
+            start = index
+        elif index - last - 1 >= gap:
+            runs.append((start, last + 1))
+            start = index
+        last = index
+    if start is not None:
+        runs.append((start, last + 1))
+    return runs
+
+
+def _xy_cut(mask, width, box, gap, cells):
+    """Split a box at empty rows, then empty columns, until neither splits."""
+    x0, y0, x1, y1 = box
+    empty = bytes(x1 - x0)
+    rows = _runs([mask[y * width + x0:y * width + x1] != empty for y in range(y0, y1)], gap)
+    if len(rows) > 1:
+        for top, bottom in rows:
+            _xy_cut(mask, width, (x0, y0 + top, x1, y0 + bottom), gap, cells)
+        return
+    if not rows:
+        return
+    y0, y1 = y0 + rows[0][0], y0 + rows[0][1]
+    occupied = 0
+    for y in range(y0, y1):
+        occupied |= int.from_bytes(mask[y * width + x0:y * width + x1], "big")
+    columns = _runs(occupied.to_bytes(x1 - x0, "big"), gap)
+    if len(columns) > 1:
+        for left, right in columns:
+            _xy_cut(mask, width, (x0 + left, y0, x0 + right, y1), gap, cells)
+        return
+    cells.append((x0 + columns[0][0], y0, x0 + columns[0][1], y1))
+    if len(cells) > MAX_SLICES:
+        raise b.OpError("The sheet splits into more than {0} cells; raise min_gap "
+                        "or min_pixels".format(MAX_SLICES), kind="resource_limit")
+
+
+def _tight(mask, width, box):
+    """Box shrunk to its content, or None when the box is empty."""
+    x0, y0, x1, y1 = box
+    cells = []
+    _xy_cut(mask, width, box, max(x1 - x0, y1 - y0) + 1, cells)
+    return cells[0] if cells else None
+
+
+def _column_counts(mask, width, top, bottom):
+    """Content pixels in each column between two rows."""
+    return [mask[top * width + x:bottom * width:width].count(1) for x in range(width)]
+
+
+def _valley_cuts(counts, left, right, pieces):
+    """Spans of [left, right) cut at the emptiest columns near even spacing.
+
+    Counts are summed over a small window, so a wide valley between two
+    frames wins over a one-pixel crack inside a sprite.
+    """
+    span = (right - left) / pieces
+    radius = max(1, int(span / 40))
+    prefix = [0]
+    for count in counts:
+        prefix.append(prefix[-1] + count)
+    def load(x):
+        return prefix[min(len(counts), x + radius + 1)] - prefix[max(0, x - radius)]
+    cuts = [left]
+    for i in range(1, pieces):
+        ideal = left + i * span
+        low = max(cuts[-1] + 1, int(ideal - span / 2))
+        high = max(low, min(right - 1, int(ideal + span / 2)))
+        cuts.append(min(range(low, high + 1), key=lambda x: (load(x), abs(x - ideal))))
+    cuts.append(right)
+    return list(zip(cuts, cuts[1:]))
+
+
+_RUN = re.compile(rb"\x01+")
+# A component is cut at the frame columns only when two frames each hold at
+# least this share of a typical frame's pixels of it, as when a continuous
+# ground line joins several figures. Otherwise it stays whole.
+_SHARED = 0.35
+# Parts smaller than this share of a typical frame count as fragments.
+_FRAGMENT = 0.05
+
+
+def _components(mask, width, top, bottom):
+    """8-connected content between two rows, each as a list of (y, x0, x1) runs."""
+    rows = [[(m.start() - y * width, m.end() - y * width)
+             for m in _RUN.finditer(mask, y * width, (y + 1) * width)] for y in range(top, bottom)]
+    first, parent = [], []
+    for row in rows:
+        first.append(len(parent))
+        parent.extend(range(len(parent), len(parent) + len(row)))
+
+    def find(node):
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+    for r in range(1, len(rows)):
+        above = rows[r - 1]
+        starts = [start for start, _ in above]
+        for i, (start, end) in enumerate(rows[r]):
+            # Runs above that touch [start, end) including diagonally.
+            k = bisect.bisect_right(starts, end) - 1
+            while k >= 0 and above[k][1] >= start:
+                here, there = find(first[r] + i), find(first[r - 1] + k)
+                if here != there:
+                    parent[here] = there
+                k -= 1
+    groups = {}
+    for r, row in enumerate(rows):
+        for i, (start, end) in enumerate(row):
+            groups.setdefault(find(first[r] + i), []).append((top + r, start, end))
+    return list(groups.values())
+
+
+def _bounds(component):
+    return (min(r[1] for r in component), min(r[0] for r in component),
+            max(r[2] for r in component), max(r[0] for r in component) + 1)
+
+
+def _overlap(a, b_):
+    return max(0, min(a[2], b_[2]) - max(a[0], b_[0])) * max(0, min(a[3], b_[3]) - max(a[1], b_[1]))
+
+
+def _assign(components, pieces):
+    """Runs of each column piece, keeping each component whole where possible.
+
+    A small fragment, such as a chip off a slash, follows the large part
+    whose bounds it overlaps most, or the nearer one on a tie, so it lands
+    with the same frame.
+    """
+    starts = [start for start, _ in pieces]
+    shares, totals = [], [0] * len(pieces)
+    for component in components:
+        parts, mass = [[] for _ in pieces], [0] * len(pieces)
+        for y, start, end in component:
+            k = max(0, bisect.bisect_right(starts, start) - 1)
+            while start < end:
+                stop = min(end, pieces[k][1]) if k < len(pieces) - 1 else end
+                parts[k].append((y, start, stop))
+                mass[k] += stop - start
+                start, k = stop, k + 1
+        shares.append((parts, mass, _bounds(component)))
+        totals = [t + m for t, m in zip(totals, mass)]
+    typical = sorted(totals)[len(totals) // 2]
+    runs = [[] for _ in pieces]
+    large = []
+    for parts, mass, bounds in shares:
+        if sum(mass) < _FRAGMENT * typical:
+            continue
+        if sum(1 for m in mass if m >= _SHARED * typical) >= 2:
+            for k, part in enumerate(parts):
+                runs[k].extend(part)
+            continue
+        home = mass.index(max(mass))
+        runs[home].extend(run for part in parts for run in part)
+        large.append((bounds, home))
+    for parts, mass, bounds in shares:
+        if sum(mass) >= _FRAGMENT * typical:
+            continue
+        # Inside two large parts' bounds, the nearer centre wins.
+        middle = (bounds[0] + bounds[2]) / 2, (bounds[1] + bounds[3]) / 2
+        best = max(large, default=None, key=lambda item: (
+            _overlap(bounds, item[0]), -math.hypot((item[0][0] + item[0][2]) / 2 - middle[0],
+                                                   (item[0][1] + item[0][3]) / 2 - middle[1])))
+        home = best[1] if best and _overlap(bounds, best[0]) else mass.index(max(mass))
+        runs[home].extend(run for part in parts for run in part)
+    return runs
+
+
+def _frame_cut(mask, width, height, gap, columns, cells):
+    """Sprite rows cut into ``columns`` frames each, even where effects overlap.
+
+    A row at least half as wide as the widest one, with fewer clean gaps
+    than frames, is cut at its emptiest columns. Each connected part then
+    goes whole to the frame holding most of it, so a slash or a flash stays
+    with the figure that casts it. Other rows, such as labels, are split as
+    in auto mode.
+    """
+    empty = bytes(width)
+    bands = []
+    for top, bottom in _runs([mask[y * width:(y + 1) * width] != empty
+                              for y in range(height)], gap):
+        counts = _column_counts(mask, width, top, bottom)
+        bands.append((top, bottom, counts, _runs(counts, gap)))
+    if not bands:
+        return
+    widest = max(natural[-1][1] - natural[0][0] for *_, natural in bands)
+    row = 0
+    for top, bottom, counts, natural in bands:
+        left, right = natural[0][0], natural[-1][1]
+        if len(natural) >= columns or right - left < max(widest / 2, columns):
+            found = []
+            _xy_cut(mask, width, (left, top, right, bottom), gap, found)
+            cells.extend({"box": box, "pixels": _count(mask, width, box)} for box in found)
+            continue
+        pieces = _valley_cuts(counts, left, right, columns)
+        for column, runs in enumerate(_assign(_components(mask, width, top, bottom), pieces)):
+            if runs:
+                cells.append({"box": _bounds(runs), "runs": runs, "row": row, "column": column,
+                              "pixels": sum(r[2] - r[1] for r in runs)})
+        row += 1
+
+
+def _cell_image(sheet, cell, threshold):
+    """The cell's pixels; with runs, only the parts assigned to it.
+
+    Faint edge pixels below ``threshold`` belong to no run, so those next to
+    the cell's own runs are kept too.
+    """
+    x0, y0, x1, y1 = cell["box"]
+    width, height = x1 - x0, y1 - y0
+    image = sheet.copy(QRect(x0, y0, width, height))
+    if "runs" not in cell:
+        return image
+    keep = bytearray(width * height)
+    for y, start, end in cell["runs"]:
+        offset = (y - y0) * width + start - x0
+        keep[offset:offset + end - start] = b"\x01" * (end - start)
+    keep = bytes(keep)
+    grown = _bitwise([keep, keep[1:] + b"\0", b"\0" + keep[:-1],
+                      keep[width:] + bytes(width), bytes(width) + keep[:-width]],
+                     lambda x, y: x | y, len(keep))
+    data = bytearray(b.imaging.image_bytes(image))
+    faint = bytes(data[3::4]).translate(bytes(1 if 0 < a < threshold else 0 for a in range(256)))
+    keep = _bitwise([keep, _bitwise([grown, faint], lambda x, y: x & y, len(keep))],
+                    lambda x, y: x | y, len(keep))
+    data[3::4] = bytes(map(min, data[3::4], keep.translate(bytes([0]) + bytes([255]) * 255)))
+    return QImage(bytes(data), width, height, width * 4, QImage.Format_ARGB32).copy()
+
+
+def _count(mask, width, box):
+    x0, y0, x1, y1 = box
+    return sum((x1 - x0) - mask[y * width + x0:y * width + x1].count(0) for y in range(y0, y1))
+
+
+def _sheet_source(params):
+    """(raw ARGB32 bytes, width, height, origin, document, layer name) of the sheet."""
+    image = b._image_input(params, "data", "path", required=False)
+    if image is not None:
+        if params.get("layer") is not None:
+            raise b.OpError("Give a layer or an image (data/path), not both")
+        image = image.convertToFormat(QImage.Format_ARGB32)
+        check_pixels(image.rect())
+        doc = b.resolve_document(params["document"]) if params.get("document") is not None else None
+        return b.imaging.image_bytes(image), image.width(), image.height(), (0, 0), doc, None
+    doc = b.resolve_document(params.get("document"))
+    node = b.resolve_node(doc, params.get("layer"))
+    if node.type().endswith("mask"):
+        raise b.OpError("Choose a layer, not a mask, to slice")
+    b.imaging.require_pixel_ops(node)
+    doc.waitForDone()
+    bounds = node.bounds()
+    if bounds.isEmpty():
+        raise b.OpError("Layer has no pixels to slice")
+    check_pixels(bounds)
+    return (_rendered(node, bounds), bounds.width(), bounds.height(),
+            (bounds.x(), bounds.y()), doc, node.name())
+
+
+def slice_sheet(params):
+    from ..native_commands import group
+    raw, width, height, (ox, oy), doc, source = _sheet_source(params)
+    output = str(b._arg(params, "output", "layers"))
+    if output not in ("layers", "files"):
+        raise b.OpError("output must be layers or files")
+    if output == "layers" and doc is None:
+        raise b.OpError("Slicing an image file into layers needs a document")
+    mode = str(b._arg(params, "mode", "auto"))
+    threshold = integer(b._arg(params, "threshold", 16), "threshold", 1, 255)
+    tolerance = integer(b._arg(params, "tolerance", 24), "tolerance", 0, 255)
+    trim = b._as_bool(b._arg(params, "trim", True), "trim")
+    raw_background = b._arg(params, "background", "auto")
+    if raw_background == "transparent":
+        background = None
+    elif raw_background == "auto":
+        # A sheet with any transparency is cut on alpha; an opaque one on
+        # the colour found in its corners.
+        background = None if raw[3::4].count(255) != width * height else _corner_color(raw, width, height)
+    else:
+        color = b.parse_color(raw_background)
+        background = (color.red(), color.green(), color.blue(), color.alpha())
+    mask, background = _content_mask(raw, width, height, background, threshold, tolerance)
+    min_pixels = integer(b._arg(params, "min_pixels", 16), "min_pixels", 1, 1 << 24)
+    cells = []
+    if mode == "auto":
+        gap = integer(b._arg(params, "min_gap", 2), "min_gap", 1, 4096)
+        found = []
+        if params.get("columns") is not None:
+            _frame_cut(mask, width, height, gap, integer(params["columns"], "columns", 1, 256), found)
+        else:
+            _xy_cut(mask, width, (0, 0, width, height), gap, found)
+            found = [{"box": box, "pixels": _count(mask, width, box)} for box in found]
+        cells = [cell for cell in found if cell["pixels"] >= min_pixels]
+    elif mode == "grid":
+        columns = integer(b._req(params, "columns"), "columns", 1, 256)
+        rows = integer(b._req(params, "rows"), "rows", 1, 256)
+        margin = integer(b._arg(params, "margin", 0), "margin", 0, 4096)
+        spacing = integer(b._arg(params, "spacing", 0), "spacing", 0, 4096)
+        cell_w = (width - 2 * margin - (columns - 1) * spacing) // columns
+        cell_h = (height - 2 * margin - (rows - 1) * spacing) // rows
+        if cell_w < 1 or cell_h < 1:
+            raise b.OpError("The grid does not fit the sheet")
+        for row in range(rows):
+            for column in range(columns):
+                x = margin + column * (cell_w + spacing)
+                y = margin + row * (cell_h + spacing)
+                box = (x, y, x + cell_w, y + cell_h)
+                if _count(mask, width, box) < min_pixels:
+                    continue
+                cells.append({"box": _tight(mask, width, box) if trim else box,
+                              "row": row, "column": column})
+    else:
+        raise b.OpError("mode must be auto or grid")
+    if not cells:
+        raise b.OpError("No cells with content were found; check background, "
+                        "threshold and min_pixels")
+    sheet = QImage(raw, width, height, width * 4, QImage.Format_ARGB32).copy()
+    for index, cell in enumerate(cells):
+        x0, y0, x1, y1 = cell["box"]
+        cell.update(index=index, x=x0 + ox, y=y0 + oy, width=x1 - x0, height=y1 - y0)
+    result = {"mode": mode, "cells": len(cells), "source": source or "image",
+              "background": "transparent" if background is None else
+              "#{0:02x}{1:02x}{2:02x}".format(*background[:3])}
+    if output == "layers":
+        if len(cells) > MAX_SLICE_LAYERS:
+            raise b.OpError("More than {0} cells; export them as files instead"
+                            .format(MAX_SLICE_LAYERS), kind="resource_limit")
+        name = str(b._arg(params, "name", (source or "Sheet") + " slices")).strip() or "Slices"
+        siblings = list(doc.rootNode().childNodes())  # bottom first
+        with group(doc, "MCP slice sheet"):
+            folder = doc.createGroupLayer(name)
+            if not doc.rootNode().addChildNode(folder, siblings[-1] if siblings else None):
+                raise b.OpError("Could not attach the slices group")
+            for cell in cells:
+                x0, y0, x1, y1 = cell["box"]
+                layer = doc.createNode("{0} {1:03d}".format(name, cell["index"] + 1), "paintlayer")
+                b.imaging.write_node_image(layer, QRect(cell["x"], cell["y"], x1 - x0, y1 - y0),
+                                           _cell_image(sheet, cell, threshold))
+                # Each slice goes to the bottom, so the docker lists them in order.
+                if not folder.addChildNode(layer, None):
+                    raise b.OpError("Could not attach a slice layer")
+        b._refresh(doc)
+        result.update(group=b._find_in_tree(b.layer_tree(doc), folder), undoable=True, undo_steps=1,
+                      boxes=[{k: c[k] for k in ("index", "x", "y", "width", "height", "row", "column")
+                              if k in c} for c in cells])
+        return result
+    return dict(result, **_write_slices(params, sheet, cells, threshold))
+
+
+def _write_slices(params, sheet, cells, threshold):
+    directory = Path(str(b._req(params, "directory"))).expanduser()
+    if not directory.is_absolute():
+        raise b.OpError("directory must be an absolute path")
+    if directory.exists():
+        raise b.OpError("Export directory must be new; existing files are preserved")
+    uniform = b._as_bool(b._arg(params, "uniform", False), "uniform")
+    align = str(b._arg(params, "align", "center"))
+    if align not in ("center", "bottom"):
+        raise b.OpError("align must be center or bottom")
+    padding = integer(b._arg(params, "padding", 0), "padding", 0, 512)
+    prefix = re.sub(r"[^\w.-]+", "_", str(b._arg(params, "prefix", "cell"))).strip("._") or "cell"
+    frame_w = max(c["width"] for c in cells) if uniform else None
+    frame_h = max(c["height"] for c in cells) if uniform else None
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    stage = Path(tempfile.mkdtemp(prefix=".krita-slices-", dir=str(directory.parent)))
+    entries = []
+    try:
+        for cell in cells:
+            x0, y0, x1, y1 = cell["box"]
+            w, h = x1 - x0, y1 - y0
+            fw, fh = (frame_w, frame_h) if uniform else (w, h)
+            left = (fw - w) // 2
+            top = fh - h if align == "bottom" else (fh - h) // 2
+            image = QImage(fw + 2 * padding, fh + 2 * padding, QImage.Format_ARGB32)
+            image.fill(QColor(0, 0, 0, 0))
+            painter = QPainter(image)
+            painter.setCompositionMode(QPainter.CompositionMode_Source)
+            painter.drawImage(padding + left, padding + top, _cell_image(sheet, cell, threshold))
+            painter.end()
+            name = "{0}_{1:03d}.png".format(prefix, cell["index"])
+            if not image.save(str(stage / name), "PNG"):
+                raise b.OpError("Could not save " + name)
+            entry = {"file": name, "index": cell["index"], "x": cell["x"], "y": cell["y"],
+                     "width": w, "height": h, "image_width": image.width(),
+                     "image_height": image.height(), "offset_x": padding + left,
+                     "offset_y": padding + top}
+            for key in ("row", "column"):
+                if key in cell:
+                    entry[key] = cell[key]
+            entries.append(entry)
+        manifest = {"cells": entries, "uniform": uniform, "align": align, "padding": padding,
+                    "note": "x, y, width, height locate each cell on the sheet; offset_x, "
+                            "offset_y place it inside its PNG."}
+        if uniform:
+            manifest["frame"] = {"width": frame_w + 2 * padding, "height": frame_h + 2 * padding}
+        (stage / "manifest.json").write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        stage.rename(directory)
+    finally:
+        if stage.exists():
+            shutil.rmtree(stage)
+    return {"directory": str(directory), "manifest": str(directory / "manifest.json"),
+            "files": [e["file"] for e in entries], "mutated": False}
+
+
 OPERATIONS = [("outline_layer", outline_layer, 120, True),
-              ("export_layers", export_layers, 120, False)]
+              ("export_layers", export_layers, 120, False),
+              ("slice_sheet", slice_sheet, 180, True)]

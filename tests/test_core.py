@@ -216,7 +216,10 @@ class AssetToolTests(unittest.TestCase):
 
     def test_new_tools_and_arguments_are_published(self):
         tools = mcp_server.TOOLS_BY_NAME
-        self.assertTrue({"outline_layer", "export_layers"} <= set(tools))
+        self.assertTrue({"outline_layer", "export_layers", "slice_sheet",
+                         "remove_background", "quantize_layer"} <= set(tools))
+        for name in ("slice_sheet", "remove_background", "quantize_layer"):
+            self.assertEqual(tools[name]["_required"], [], name)
         self.assertEqual(tools["draw_brush"]["_required"], [])
         self.assertIn("strokes", tools["draw_brush"]["inputSchema"]["properties"])
         self.assertEqual(tools["export_layers"]["_required"], ["directory"])
@@ -283,6 +286,138 @@ class AssetToolTests(unittest.TestCase):
         self.assertEqual(grown.pixelColor(35, 35).alpha(), 255)
         self.assertTrue(0 < grown.pixelColor(36, 36).alpha() < 255)
         self.assertEqual(grown.pixelColor(37, 37).alpha(), 0)
+
+
+class AssetCleanupTests(unittest.TestCase):
+    """Sheet slicing, background removal and palette cores, without Krita."""
+
+    setUpClass = AssetToolTests.__dict__["setUpClass"]
+
+    @classmethod
+    def cleanup(cls):
+        return importlib.import_module(package.__name__ + ".operations.cleanup")
+
+    def sprite(self, size=100):
+        from PyQt6.QtCore import QRectF, Qt
+        from PyQt6.QtGui import QColor, QImage, QPainter
+        image = QImage(size, size, QImage.Format.Format_ARGB32)
+        image.fill(QColor(255, 255, 255))
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(200, 30, 30))
+        painter.drawEllipse(QRectF(20, 20, 60, 60))
+        painter.setBrush(QColor(255, 255, 255))
+        painter.drawEllipse(QRectF(40, 40, 20, 20))
+        painter.end()
+        return self.ops.imaging.image_bytes(image)
+
+    @staticmethod
+    def rgba(data, x, y, width=100):
+        i = (y * width + x) * 4
+        return (data[i + 2], data[i + 1], data[i], data[i + 3])
+
+    def test_auto_slicing_splits_at_gaps_and_drops_specks(self):
+        width, height = 140, 130
+        raw = bytearray(bytes([250, 250, 250, 255]) * (width * height))
+        boxes = [(10, 10, 40, 50), (60, 12, 90, 45), (10, 80, 50, 120), (70, 90, 72, 92)]
+        for x0, y0, x1, y1 in boxes:
+            for y in range(y0, y1):
+                raw[(y * width + x0) * 4:(y * width + x1) * 4] = bytes([30, 160, 220, 255]) * (x1 - x0)
+        raw = bytes(raw)
+        background = self.assets._corner_color(raw, width, height)
+        self.assertEqual(background, (250, 250, 250, 255))
+        mask, _ = self.assets._content_mask(raw, width, height, background, 16, 24)
+        cells = []
+        self.assets._xy_cut(mask, width, (0, 0, width, height), 2, cells)
+        kept = [c for c in cells if self.assets._count(mask, width, c) >= 16]
+        self.assertEqual(kept, boxes[:3])
+        merged = []
+        self.assets._xy_cut(mask, width, (0, 0, width, height), 25, merged)
+        self.assertIn((10, 10, 90, 50), merged)
+
+    def test_frame_columns_keep_effects_with_their_figure(self):
+        width, height = 300, 100
+        def sheet(ground):
+            mask = bytearray(width * height)
+            def fill(x0, y0, x1, y1):
+                for y in range(y0, y1):
+                    mask[y * width + x0:y * width + x1] = b"\x01" * (x1 - x0)
+            for x in (20, 120, 220):
+                fill(x, 20, x + 40, 90)
+            fill(55, 10, 60, 20)       # figure 1 raises a slash ...
+            fill(55, 10, 140, 15)      # ... over figure 2's columns
+            fill(130, 16, 132, 18)     # a chip off the slash
+            if ground:
+                fill(10, 92, 290, 95)  # one ground line joins every figure
+            cells = []
+            self.assets._frame_cut(bytes(mask), width, height, 2, 3, cells)
+            return {cell["column"]: cell["box"] for cell in cells}
+        boxes = sheet(False)
+        self.assertEqual(boxes, {0: (20, 10, 140, 90), 1: (120, 20, 160, 90), 2: (220, 20, 260, 90)})
+        boxes = sheet(True)
+        self.assertEqual(sorted(boxes), [0, 1, 2])
+        for column, x in enumerate((20, 120, 220)):
+            left, _, right, bottom = boxes[column]
+            self.assertTrue(left <= x and x + 40 <= right and bottom == 95, boxes)
+        self.assertLessEqual(boxes[0][2], 120);self.assertGreaterEqual(boxes[1][0], 60)
+        self.assertLessEqual(boxes[1][2], 220);self.assertGreaterEqual(boxes[2][0], 160)
+        cells = []
+        self.assets._frame_cut(bytes(width * height), width, height, 2, 3, cells)
+        self.assertEqual(cells, [])
+
+    def test_holes_clear_enclosed_background_above_a_size(self):
+        raw = self.sprite()
+        kept = self.cleanup()._cleared(raw, 100, 100, (255, 255, 255), "contiguous", 32, 24, True, 0, 500)
+        cleared = self.cleanup()._cleared(raw, 100, 100, (255, 255, 255), "contiguous", 32, 24, True, 0, 200)
+        self.assertEqual(self.rgba(kept, 50, 50)[3], 255)
+        self.assertEqual(self.rgba(cleared, 50, 50)[3], 0)
+        self.assertEqual(self.rgba(cleared, 30, 50), (200, 30, 30, 255))
+
+    def test_contiguous_removal_keeps_enclosed_background_colour(self):
+        raw = self.sprite()
+        kept = self.cleanup()._cleared(raw, 100, 100, (255, 255, 255), "contiguous", 32, 24, True, 0)
+        cleared = self.cleanup()._cleared(raw, 100, 100, (255, 255, 255), "global", 32, 24, True, 0)
+        self.assertEqual(self.rgba(kept, 2, 2)[3], 0)
+        self.assertEqual(self.rgba(kept, 50, 50), (255, 255, 255, 255))
+        self.assertEqual(self.rgba(cleared, 50, 50)[3], 0)
+        self.assertEqual(self.rgba(kept, 30, 50), (200, 30, 30, 255))
+
+    def test_defringe_removes_the_background_tint_from_edges(self):
+        raw = self.sprite()
+        clean = self.cleanup()._cleared(raw, 100, 100, (255, 255, 255), "contiguous", 32, 24, True, 0)
+        plain = self.cleanup()._cleared(raw, 100, 100, (255, 255, 255), "contiguous", 32, 24, False, 0)
+        rim = [(x, y) for y in range(100) for x in range(100) if 0 < self.rgba(clean, x, y)[3] < 255]
+        self.assertGreater(len(rim), 50)
+        tint = lambda data: max(min(self.rgba(data, x, y)[1:3]) for x, y in rim)
+        self.assertLess(tint(clean), 45)
+        self.assertGreater(tint(plain), 150)
+
+    def test_palette_quantize_dither_replace_and_swap(self):
+        from PyQt6.QtGui import QColor, QImage
+        image = QImage(64, 4, QImage.Format.Format_ARGB32)
+        for x in range(64):
+            for y in range(4):
+                image.setPixelColor(x, y, QColor(x * 4, x * 4, x * 4, 255 if x % 2 else 128))
+        raw = self.ops.imaging.image_bytes(image)
+        grey = [QColor(v, v, v) for v in (0, 85, 170, 255)]
+        cleanup = self.cleanup()
+        plain = cleanup._quantized(raw, 64, 4, grey, None, "none")
+        self.assertEqual({plain[i] for i in range(0, len(plain), 4)}, {0, 85, 170, 255})
+        self.assertEqual(plain[3::4], raw[3::4])
+        dithered = cleanup._quantized(raw, 64, 4, grey, None, "ordered")
+        band = [dithered[(y * 64 + x) * 4] for y in range(4) for x in range(22, 28)]
+        self.assertEqual(set(band), {85, 170})
+        swapped = cleanup._quantized(raw, 64, 4, grey, [QColor("red"), QColor("lime"),
+                                                       QColor("blue"), QColor("yellow")], "none")
+        self.assertEqual(self.rgba(swapped, 0, 0, 64)[:3], (255, 0, 0))
+        samples = [(v, v, v) for v in range(0, 256, 4)]
+        self.assertEqual(len(cleanup._median_cut(samples, 4)), 4)
+        sprite = self.sprite()
+        shifted, counts = cleanup._swapped(sprite, [QColor(200, 30, 30)], [QColor(30, 30, 200)], 40)
+        self.assertGreater(counts[0], 2000)
+        self.assertEqual(self.rgba(shifted, 30, 50), (30, 30, 200, 255))
+        self.assertEqual(self.rgba(shifted, 50, 50), (255, 255, 255, 255))
 
 
 class InstallConfigTests(unittest.TestCase):

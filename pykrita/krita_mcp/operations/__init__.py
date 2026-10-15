@@ -2,7 +2,7 @@
 
 
 def register(base):
-    from . import painting, selections, transforms, patches, editing, animation, capabilities, warp, dialogs, feedback, correction, assets
-    for module in (painting, selections, transforms, patches, editing, animation, capabilities, warp, dialogs, feedback, correction, assets):
+    from . import painting, selections, transforms, patches, editing, animation, capabilities, warp, dialogs, feedback, correction, assets, cleanup
+    for module in (painting, selections, transforms, patches, editing, animation, capabilities, warp, dialogs, feedback, correction, assets, cleanup):
         for name, function, timeout, mutates in module.OPERATIONS:
             base.op(name, timeout=timeout, mutates=mutates)(function)
