@@ -23,11 +23,23 @@ class WorkflowTests(unittest.TestCase):
                                "name": "workflow-tests", "version": "1"}})
         cls.client.notify("notifications/initialized")
         cls.temp = tempfile.TemporaryDirectory(prefix="krita-workflow-")
+        caps, _ = cls.client.ok("list_capabilities", {"kind": "workflow"})
+        helper = caps.get("native_helper", {})
+        cls.has_helper = bool(helper.get("available", False))
+        cls.helper_reason = helper.get("reason") or "native helper unavailable"
 
     @classmethod
     def tearDownClass(cls):
         cls.client.close()
         cls.temp.cleanup()
+
+    def require_helper(self):
+        if not self.has_helper:
+            try:
+                self.call("close_document", document=self.doc, discard_changes=True)
+            except Exception:
+                pass
+            self.skipTest(self.helper_reason)
 
     def setUp(self):
         self.doc = "workflow-test-" + uuid.uuid4().hex[:8]
@@ -70,6 +82,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("b) Basic-5 Size", self.call("list_brushes", query="Basic-5")["presets"])
 
     def test_draw_rect_selection_and_soft_mask(self):
+        self.require_helper()
         self.fill("blue")
         self.call("set_selection", x=10, y=10, width=20, height=20)
         result = self.fill("red")
@@ -85,6 +98,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.pixel(50, 50), [0, 0, 255, 255])
 
     def test_polygon_mask_and_combine(self):
+        self.require_helper()
         self.call("select_polygon", points=[[10, 10], [60, 10], [10, 60]], antialias=False)
         self.fill("red")
         self.assertEqual(self.pixel(15, 15), [255, 0, 0, 255])
@@ -104,6 +118,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotEqual(self.pixel(35, 15), [255, 255, 255, 255])
 
     def test_polygon_feather(self):
+        self.require_helper()
         self.call("select_polygon", points=[[30, 30], [90, 30], [90, 90], [30, 90]],
                   feather=8)
         self.fill("red")
@@ -112,6 +127,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.pixel(10, 60)[3], 0)
 
     def test_selection_undo_keeps_previous_mask(self):
+        self.require_helper()
         self.call("set_selection", x=20, y=20, width=30, height=30)
         before = self.call("inspect_document")["selection"]
         self.call("set_selection", mode="grow", amount=6)
@@ -123,6 +139,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.call("inspect_document")["selection"], before)
 
     def test_native_pressure_undo_redo_and_ui_restore(self):
+        self.require_helper()
         before = self.digest()
         state = self.brush_state()
         result = self.call("draw_brush", layer="Paint", preset="b) Basic-5 Size",
@@ -142,6 +159,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.digest(), painted)
 
     def test_pressure_segments_and_native_path(self):
+        self.require_helper()
         before = self.digest()
         points = [{"x": 10, "y": 20, "pressure": 0.2},
                   {"x": 60, "y": 40, "pressure": 1},
@@ -160,6 +178,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.digest(), before)
 
     def test_brush_selection_opacity_and_eraser(self):
+        self.require_helper()
         self.call("set_selection", x=40, y=20, width=20, height=80)
         args = {"layer": "Paint", "preset": "b) Basic-5 Size", "size": 20,
                 "points": [{"x": 10, "y": 60}, {"x": 100, "y": 60}]}
@@ -173,6 +192,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.digest(), painted)
 
     def test_extract_copy_cut_and_native_undo(self):
+        self.require_helper()
         self.fill("#a53218")
         original = self.digest()
         for mode, steps in (("copy", 2), ("cut", 3)):
@@ -195,6 +215,7 @@ class WorkflowTests(unittest.TestCase):
             self.call("undo", count=steps)
 
     def test_transform_preview_pivot_native_undo_and_save(self):
+        self.require_helper()
         self.call("draw", layer="Paint", commands=[{
             "type": "fill_rect", "x": 40, "y": 20, "w": 10, "h": 20, "color": "red"}])
         raw = self.digest()
@@ -240,6 +261,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.digest(projection=True), updated)
 
     def test_invalid_inputs_leave_pixels_and_brush_state_unchanged(self):
+        self.require_helper()
         self.fill("blue")
         before, state = self.digest(), self.brush_state()
         bad_calls = [
@@ -260,6 +282,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(self.brush_state(), state)
 
     def test_locked_and_masked_layers_fail_before_paint(self):
+        self.require_helper()
         self.fill("blue")
         before = self.digest()
         args = {"document": self.doc, "layer": "Paint", "points": [
@@ -273,6 +296,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.digest(), before)
 
     def test_requested_document_undo_and_selection(self):
+        self.require_helper()
         first = self.doc
         before = self.digest()
         self.call("draw_brush", layer="Paint", points=[{"x": 10, "y": 20}, {"x": 60, "y": 20}])
@@ -286,6 +310,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNotNone(self.call("inspect_document")["selection"])
 
     def test_deselect_clears_only_the_requested_document(self):
+        self.require_helper()
         first = self.doc
         self.call("set_selection", x=10, y=10, width=20, height=20)
         self.setUp()

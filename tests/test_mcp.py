@@ -24,12 +24,14 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 SERVER = os.path.join(HERE, "mcp_server.py")
 PROTOCOL = "2025-06-18"
 
 VERBOSE = "-v" in sys.argv or "--verbose" in sys.argv
 
-PASS, FAIL = [], []
+PASS, FAIL, SKIP = [], [], []
 
 
 def check(name, condition, detail=""):
@@ -40,6 +42,14 @@ def check(name, condition, detail=""):
         FAIL.append((name, detail))
         print("  [FAIL] {0}  {1}".format(name, detail))
     return bool(condition)
+
+
+def skip(name, reason=""):
+    SKIP.append((name, reason))
+    if reason:
+        print("  [skip] {0} ({1})".format(name, reason))
+    else:
+        print("  [skip] {0}".format(name))
 
 
 # Bisection aid: KRITA_MCP_TEST_UNTIL=<section> stops just before that
@@ -228,9 +238,17 @@ def main():
               str(status.get("krita_version", "")).startswith(("5.", "6.")),
               str(status.get("krita_version")))
 
-        selftest, _ = client.ok("self_test")
-        check("self_test all green", selftest.get("all_ok"),
-              json.dumps(selftest.get("checks"))[:400])
+        caps, _ = client.ok("list_capabilities", {"kind": "workflow"})
+        helper_info = caps.get("native_helper", {})
+        has_helper = bool(helper_info.get("available", False))
+        helper_reason = helper_info.get("reason") or "native helper unavailable"
+
+        if has_helper:
+            selftest, _ = client.ok("self_test")
+            check("self_test all green", selftest.get("all_ok"),
+                  json.dumps(selftest.get("checks"))[:400])
+        else:
+            skip("self_test all green", helper_reason)
 
         # An earlier aborted run may have left its document open, which would
         # make every lookup by name ambiguous.
@@ -315,60 +333,67 @@ def main():
 
         # ---------------------------------------------------------------
         section("drawing")
-        drawn, _ = client.ok("draw", {
-            "document": doc_name, "layer": "Art",
-            "commands": [
-                {"type": "fill_rect", "x": 0, "y": 0, "w": 400, "h": 300,
-                 "color": "#ffffff"},
-                {"type": "rect", "x": 20, "y": 20, "w": 120, "h": 80,
-                 "fill": "#e94f37", "color": "#1b1b1e", "stroke_width": 4,
-                 "radius": 10},
-                {"type": "ellipse", "x": 170, "y": 20, "w": 100, "h": 80,
-                 "fill": "#3f88c5"},
-                {"type": "circle", "cx": 330, "cy": 60, "radius": 40,
-                 "fill": "#44bba4", "color": "#000000", "stroke_width": 2},
-                {"type": "line", "x1": 20, "y1": 130, "x2": 380, "y2": 130,
-                 "color": "#1b1b1e", "stroke_width": 3, "cap": "round"},
-                {"type": "polygon",
-                 "points": [[40, 160], [110, 160], [75, 230]],
-                 "fill": "#f6ae2d", "color": "#1b1b1e", "stroke_width": 2},
-                {"type": "polyline",
-                 "points": [[140, 230], [180, 170], [220, 220], [260, 165]],
-                 "color": "#e94f37", "stroke_width": 3},
-                {"type": "linear_gradient", "x": 280, "y": 160, "w": 100,
-                 "h": 70, "direction": "diagonal",
-                 "stops": [[0, "#3f88c5"], [1, "#f6ae2d"]]},
-                {"type": "radial_gradient", "x": 20, "y": 240, "w": 60,
-                 "h": 50, "stops": [[0, "#ffffff"], [1, "#44bba4"]]},
-                {"type": "text", "x": 100, "y": 250, "text": "Krita MCP\nline two",
-                 "size": 20, "color": "#1b1b1e", "bold": True},
-                {"type": "clear", "x": 360, "y": 260, "w": 30, "h": 30},
-            ],
-        })
-        check("all 11 draw commands ran", drawn.get("drawn") == 11, str(drawn))
+        if has_helper:
+            drawn, _ = client.ok("draw", {
+                "document": doc_name, "layer": "Art",
+                "commands": [
+                    {"type": "fill_rect", "x": 0, "y": 0, "w": 400, "h": 300,
+                     "color": "#ffffff"},
+                    {"type": "rect", "x": 20, "y": 20, "w": 120, "h": 80,
+                     "fill": "#e94f37", "color": "#1b1b1e", "stroke_width": 4,
+                     "radius": 10},
+                    {"type": "ellipse", "x": 170, "y": 20, "w": 100, "h": 80,
+                     "fill": "#3f88c5"},
+                    {"type": "circle", "cx": 330, "cy": 60, "radius": 40,
+                     "fill": "#44bba4", "color": "#000000", "stroke_width": 2},
+                    {"type": "line", "x1": 20, "y1": 130, "x2": 380, "y2": 130,
+                     "color": "#1b1b1e", "stroke_width": 3, "cap": "round"},
+                    {"type": "polygon",
+                     "points": [[40, 160], [110, 160], [75, 230]],
+                     "fill": "#f6ae2d", "color": "#1b1b1e", "stroke_width": 2},
+                    {"type": "polyline",
+                     "points": [[140, 230], [180, 170], [220, 220], [260, 165]],
+                     "color": "#e94f37", "stroke_width": 3},
+                    {"type": "linear_gradient", "x": 280, "y": 160, "w": 100,
+                     "h": 70, "direction": "diagonal",
+                     "stops": [[0, "#3f88c5"], [1, "#f6ae2d"]]},
+                    {"type": "radial_gradient", "x": 20, "y": 240, "w": 60,
+                     "h": 50, "stops": [[0, "#ffffff"], [1, "#44bba4"]]},
+                    {"type": "text", "x": 100, "y": 250, "text": "Krita MCP\nline two",
+                     "size": 20, "color": "#1b1b1e", "bold": True},
+                    {"type": "clear", "x": 360, "y": 260, "w": 30, "h": 30},
+                ],
+            })
+            check("all 11 draw commands ran", drawn.get("drawn") == 11, str(drawn))
 
-        px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
-                                        "x": 80, "y": 60})
-        check("rect fill colour is exact", px.get("hex") == "#e94f37ff", str(px))
+            px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
+                                            "x": 80, "y": 60})
+            check("rect fill colour is exact", px.get("hex") == "#e94f37ff", str(px))
 
-        px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
-                                        "x": 220, "y": 60})
-        check("ellipse fill colour is exact", px.get("hex") == "#3f88c5ff",
-              str(px))
+            px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
+                                            "x": 220, "y": 60})
+            check("ellipse fill colour is exact", px.get("hex") == "#3f88c5ff",
+                  str(px))
 
-        px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
-                                        "x": 375, "y": 275})
-        check("clear left transparency", px.get("rgba", [1, 1, 1, 1])[3] == 0,
-              str(px))
+            px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
+                                            "x": 375, "y": 275})
+            check("clear left transparency", px.get("rgba", [1, 1, 1, 1])[3] == 0,
+                  str(px))
 
-        # base64 image paste round-trip
-        tiny = base64.b64encode(_tiny_png()).decode("ascii")
-        client.ok("draw", {"document": doc_name, "layer": "Art",
-                           "commands": [{"type": "image", "x": 300, "y": 250,
-                                         "w": 20, "h": 20, "data": tiny}]})
-        px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
-                                        "x": 310, "y": 260})
-        check("pasted image pixels landed", px.get("hex") == "#ff00ffff", str(px))
+            # base64 image paste round-trip
+            tiny = base64.b64encode(_tiny_png()).decode("ascii")
+            client.ok("draw", {"document": doc_name, "layer": "Art",
+                               "commands": [{"type": "image", "x": 300, "y": 250,
+                                             "w": 20, "h": 20, "data": tiny}]})
+            px, _ = client.ok("get_pixel", {"document": doc_name, "layer": "Art",
+                                            "x": 310, "y": 260})
+            check("pasted image pixels landed", px.get("hex") == "#ff00ffff", str(px))
+        else:
+            skip("all 11 draw commands ran", helper_reason)
+            skip("rect fill colour is exact", helper_reason)
+            skip("ellipse fill colour is exact", helper_reason)
+            skip("clear left transparency", helper_reason)
+            skip("pasted image pixels landed", helper_reason)
 
         # ---------------------------------------------------------------
         section("reading the canvas")
@@ -406,41 +431,48 @@ def main():
               str(caps.get("count")))
 
         if "invert" in filters:
-            client.ok("apply_filter", {"document": doc_name, "layer": "Art",
-                                       "filter": "invert"})
-            px, _ = client.ok("get_pixel", {"document": doc_name,
-                                            "layer": "Art", "x": 80, "y": 60})
-            check("invert filter changed pixels",
-                  px.get("hex") == "#16b0c8ff", str(px))
-            client.ok("apply_filter", {"document": doc_name, "layer": "Art",
-                                       "filter": "invert"})
+            if has_helper:
+                client.ok("apply_filter", {"document": doc_name, "layer": "Art",
+                                           "filter": "invert"})
+                px, _ = client.ok("get_pixel", {"document": doc_name,
+                                                "layer": "Art", "x": 80, "y": 60})
+                check("invert filter changed pixels",
+                      px.get("hex") == "#16b0c8ff", str(px))
+                client.ok("apply_filter", {"document": doc_name, "layer": "Art",
+                                           "filter": "invert"})
+            else:
+                skip("invert filter changed pixels", helper_reason)
 
         if "invert" in filters:
-            # A regional filter must leave everything outside the rect alone.
-            before_in, _ = client.ok("get_pixel", {"document": doc_name,
-                                                   "layer": "Art",
-                                                   "x": 80, "y": 60})
-            before_out, _ = client.ok("get_pixel", {"document": doc_name,
-                                                    "layer": "Art",
-                                                    "x": 220, "y": 60})
-            client.ok("apply_filter", {
-                "document": doc_name, "layer": "Art", "filter": "invert",
-                "region": {"x": 0, "y": 0, "width": 150, "height": 300}})
-            after_in, _ = client.ok("get_pixel", {"document": doc_name,
-                                                  "layer": "Art",
-                                                  "x": 80, "y": 60})
-            after_out, _ = client.ok("get_pixel", {"document": doc_name,
-                                                   "layer": "Art",
-                                                   "x": 220, "y": 60})
-            check("regional filter changed pixels inside the region",
-                  after_in["hex"] != before_in["hex"],
-                  "{0} -> {1}".format(before_in["hex"], after_in["hex"]))
-            check("regional filter left pixels outside untouched",
-                  after_out["hex"] == before_out["hex"],
-                  "{0} -> {1}".format(before_out["hex"], after_out["hex"]))
-            client.ok("apply_filter", {
-                "document": doc_name, "layer": "Art", "filter": "invert",
-                "region": {"x": 0, "y": 0, "width": 150, "height": 300}})
+            if has_helper:
+                # A regional filter must leave everything outside the rect alone.
+                before_in, _ = client.ok("get_pixel", {"document": doc_name,
+                                                        "layer": "Art",
+                                                        "x": 80, "y": 60})
+                before_out, _ = client.ok("get_pixel", {"document": doc_name,
+                                                         "layer": "Art",
+                                                         "x": 220, "y": 60})
+                client.ok("apply_filter", {
+                    "document": doc_name, "layer": "Art", "filter": "invert",
+                    "region": {"x": 0, "y": 0, "width": 150, "height": 300}})
+                after_in, _ = client.ok("get_pixel", {"document": doc_name,
+                                                       "layer": "Art",
+                                                       "x": 80, "y": 60})
+                after_out, _ = client.ok("get_pixel", {"document": doc_name,
+                                                        "layer": "Art",
+                                                        "x": 220, "y": 60})
+                check("regional filter changed pixels inside the region",
+                      after_in["hex"] != before_in["hex"],
+                      "{0} -> {1}".format(before_in["hex"], after_in["hex"]))
+                check("regional filter left pixels outside untouched",
+                      after_out["hex"] == before_out["hex"],
+                      "{0} -> {1}".format(before_out["hex"], after_out["hex"]))
+                client.ok("apply_filter", {
+                    "document": doc_name, "layer": "Art", "filter": "invert",
+                    "region": {"x": 0, "y": 0, "width": 150, "height": 300}})
+            else:
+                skip("regional filter changed pixels inside the region", helper_reason)
+                skip("regional filter left pixels outside untouched", helper_reason)
 
             got, _ = client.ok("apply_filter", {"document": doc_name,
                                                 "layer": "Art",
@@ -451,20 +483,27 @@ def main():
                                        "filter": "invert"})
 
         if "blur" in filters:
-            got, _ = client.ok("apply_filter", {
-                "document": doc_name, "layer": "Art", "filter": "blur",
-                "region": {"x": 0, "y": 0, "width": 200, "height": 150}})
-            check("regional filter recorded in native undo",
-                  got.get("undoable") is True, str(got))
+            if has_helper:
+                got, _ = client.ok("apply_filter", {
+                    "document": doc_name, "layer": "Art", "filter": "blur",
+                    "region": {"x": 0, "y": 0, "width": 200, "height": 150}})
+                check("regional filter recorded in native undo",
+                      got.get("undoable") is True, str(got))
+            else:
+                skip("regional filter recorded in native undo", helper_reason)
 
-        sel, _ = client.ok("set_selection", {"document": doc_name,
-                                             "mode": "rect", "x": 10, "y": 10,
-                                             "width": 50, "height": 50})
-        check("rect selection made",
-              sel.get("selection", {}).get("width") == 50, str(sel))
-        sel, _ = client.ok("set_selection", {"document": doc_name,
-                                             "mode": "none"})
-        check("selection cleared", sel.get("selection") is None, str(sel))
+        if has_helper:
+            sel, _ = client.ok("set_selection", {"document": doc_name,
+                                                 "mode": "rect", "x": 10, "y": 10,
+                                                 "width": 50, "height": 50})
+            check("rect selection made",
+                  sel.get("selection", {}).get("width") == 50, str(sel))
+            sel, _ = client.ok("set_selection", {"document": doc_name,
+                                                 "mode": "none"})
+            check("selection cleared", sel.get("selection") is None, str(sel))
+        else:
+            skip("rect selection made", helper_reason)
+            skip("selection cleared", helper_reason)
 
         # ---------------------------------------------------------------
         section("escape hatches")
@@ -481,14 +520,18 @@ def main():
         check("arbitrary direct HTTP execution rejected", direct_rejected)
         check("bridge survives removed execution call", isinstance(client.ok("status")[0], dict))
 
-        client.ok("set_selection", {"document": doc_name, "mode": "rect",
-                                    "x": 0, "y": 0, "width": 20, "height": 20})
+        if has_helper:
+            client.ok("set_selection", {"document": doc_name, "mode": "rect",
+                                        "x": 0, "y": 0, "width": 20, "height": 20})
         got, _ = client.ok("trigger_action", {"name": "deselect"})
         check("trigger_action fired", got.get("triggered") == "deselect",
               str(got))
         info, _ = client.ok("inspect_document", {"document": doc_name})
-        check("triggered action took effect",
-              info.get("selection") is None, str(info.get("selection")))
+        if has_helper:
+            check("triggered action took effect",
+                  info.get("selection") is None, str(info.get("selection")))
+        else:
+            skip("triggered action took effect", helper_reason)
 
         result = client.call("trigger_action", {"name": "no_such_action_id"})
         check("unknown action rejected", result.get("isError") is True,
@@ -648,7 +691,8 @@ def main():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
     print("\n" + "=" * 60)
-    print("{0} passed, {1} failed".format(len(PASS), len(FAIL)))
+    print("{0} passed, {1} failed, {2} skipped".format(
+        len(PASS), len(FAIL), len(SKIP)))
     for name, detail in FAIL:
         print("  FAIL {0}: {1}".format(name, detail))
     if VERBOSE and client.stderr_lines:
