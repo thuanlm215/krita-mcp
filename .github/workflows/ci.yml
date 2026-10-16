@@ -56,10 +56,8 @@ jobs:
       - name: Run live tests (removed execution gate)
         run: python3 scripts/run_isolated_tests.py --output artifacts/ci-removed --no-fixture-hooks -- python3 -m unittest tests.test_removed_execution
       - name: Run live MCP tests
-        continue-on-error: true
         run: python3 scripts/run_isolated_tests.py --output artifacts/ci-mcp -- python3 tests/test_mcp.py
       - name: Run live workflow tests
-        continue-on-error: true
         run: python3 scripts/run_isolated_tests.py --output artifacts/ci-workflow -- python3 -m unittest tests.test_workflow
       - name: Upload test artifacts
         if: always()
