@@ -127,11 +127,13 @@ A serialization fault returns HTTP 500 with `response_serialization_error`, the 
 
 ## Closing documents
 
-`close_document` can take Krita down. A fresh or lightly edited document usually closes. A long session fails more often. The fault is in Krita's C++ teardown after `Document.close()` returns, and *File → Close* can hit the same path.
+`close_document` drains pending layer-model updates before tearing down views on Krita 6.0.4. This is a Python/Qt workaround and works without the native helper, including the official AppImage reporting `6.0.4 (git 57db7cd)`. The old exact-version check skipped that build, leaving the workaround inactive in CI.
 
-The 1.2 helper drains pending `KisNodeModel` updates before view teardown on Krita 6.0.4. That covers the layer-model timer crash observed here. Other teardown faults remain possible.
+The observed fault was a `KisSignalCompressor` timer calling `KisNodeModel::processUpdateQueue()` after view teardown had cleared the model's index converter. It could kill Krita after `Document.close()` returned. The bridge now recognises the release number before a space-separated build suffix and flushes the queue while the converter and nodes still exist. It then processes deferred view deletion before replying.
 
-Prefer to leave documents open and close them in Krita. If Krita exits, the next call returns a clear "could not reach Krita" error.
+Pass `save=true` to save an already named document before closing, or `discard_changes=true` to discard unsaved changes. Without either, a dirty document stays open and the call reports `unsaved_changes`.
+
+This works around the reproduced timer fault in the bridge's close path; it does not patch Krita itself or change *File → Close*. Validation covers Linux/Krita 6.0.4 with Qt6, with and without the helper. Other Krita versions keep their existing close behavior; Windows and macOS were not tested.
 
 ## Configuration
 
