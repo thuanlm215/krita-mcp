@@ -204,6 +204,39 @@ class ArgumentFileTests(unittest.TestCase):
             self.assertEqual(error.kind, "invalid_request")
 
 
+class ToolSchemaTests(unittest.TestCase):
+    # Empty schemas plus annotations are about 45 KB. The sentences on top of
+    # that are capped here so the list cannot grow back toward the 1.7 size.
+    SCHEMA_BUDGET = 71000
+
+    def test_shared_stroke_schema_and_size_budget(self):
+        plan = mcp_server.TOOLS_BY_NAME["plan_stroke"]["inputSchema"]["properties"]["spec"]
+        paint = mcp_server.TOOLS_BY_NAME["paint_stroke"]["inputSchema"]["properties"]["spec"]
+        self.assertIs(plan, paint)
+        size = len(json.dumps(mcp_server.public_tools()))
+        self.assertLess(size, self.SCHEMA_BUDGET)
+
+    def test_every_tool_publishes_annotations(self):
+        listed = {tool["name"]: tool for tool in mcp_server.public_tools()}
+        self.assertEqual(set(listed), {spec["name"] for spec in mcp_server.TOOLS})
+        read_only = set()
+        destructive = set()
+        for spec in mcp_server.TOOLS:
+            ann = spec["annotations"]
+            self.assertIsInstance(ann["readOnlyHint"], bool)
+            self.assertIsInstance(ann["destructiveHint"], bool)
+            self.assertIs(ann["openWorldHint"], False)
+            self.assertTrue(ann["title"])
+            self.assertEqual(listed[spec["name"]]["annotations"], ann)
+            if ann["readOnlyHint"]:
+                read_only.add(spec["name"])
+                self.assertIs(ann["destructiveHint"], False)
+            elif ann["destructiveHint"]:
+                destructive.add(spec["name"])
+        self.assertEqual(read_only, set(mcp_server.READ_ONLY_TOOLS))
+        self.assertEqual(destructive, set(mcp_server.DESTRUCTIVE_TOOLS))
+
+
 class AssetToolTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

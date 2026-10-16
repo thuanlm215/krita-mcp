@@ -8,7 +8,7 @@
 
 Drive a live Krita document from Claude Desktop, Codex, or any other MCP client.
 
-[thuanlm215](https://github.com/thuanlm215) maintains version **1.7.0**, published as [`krita-mcp`](https://pypi.org/project/krita-mcp/). Fifty-seven tools. The list is in [docs/usage.md](docs/usage.md). Pose, warp, frame, and repair order is in [docs/workflows.md](docs/workflows.md).
+[thuanlm215](https://github.com/thuanlm215) maintains version **1.8.0**, published as [`krita-mcp`](https://pypi.org/project/krita-mcp/). Fifty-seven tools. The list is in [docs/usage.md](docs/usage.md). Pose, warp, frame, and repair order is in [docs/workflows.md](docs/workflows.md).
 
 ## Demo
 

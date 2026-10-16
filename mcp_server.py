@@ -25,7 +25,7 @@ import time
 from painter_schema import STROKE,TARGET,FRAMES
 
 SERVER_NAME = "krita"
-SERVER_VERSION = "1.7.0"
+SERVER_VERSION = "1.8.0"
 
 SUPPORTED_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PREFERRED_PROTOCOL = "2025-06-18"
@@ -236,20 +236,17 @@ BRIDGE = BridgeClient()
 
 DOCUMENT_PROP = {
     "type": ["string", "integer"],
-    "description": ("Which open document: its index from `status`, part of its "
-                    "name or file name, or omit for the active one."),
+    "description": "Index from status, a name fragment, or omit for the active document.",
 }
 
 LAYER_PROP = {
     "type": "string",
-    "description": ("Which layer: a name (\"Sky\"), a path through groups "
-                    "(\"Background/Sky\"), a top-first index path (\"#0/#1\"), "
-                    "\"uuid:<id>\", or omit for the active layer."),
+    "description": "Name, group path, #index path, uuid:<id>, or omit for the active layer.",
 }
 
 REGION_PROP = {
     "type": "object",
-    "description": "Pixel rectangle on the canvas.",
+    "description": "Canvas rectangle in pixels.",
     "properties": {
         "x": {"type": "integer", "default": 0},
         "y": {"type": "integer", "default": 0},
@@ -262,29 +259,21 @@ REGION_PROP = {
 DRAW_COMMAND = {
     "type": "object",
     "description": (
-        "One drawing primitive. `type` decides which other fields apply:\n"
+        "One primitive. Colours are #rrggbb, #rrggbbaa, an SVG name, or [r,g,b,a]. "
+        "Field detail is in docs/usage.md.\n"
         "- fill_rect: x, y, w, h, color\n"
-        "- rect: x, y, w, h, plus optional fill, color (outline), "
-        "stroke_width, radius (rounded corners)\n"
-        "- ellipse: x, y, w, h (bounding box), fill, color, stroke_width\n"
+        "- rect: x, y, w, h, fill, color, stroke_width, radius\n"
+        "- ellipse: x, y, w, h, fill, color, stroke_width\n"
         "- circle: cx, cy, radius, fill, color, stroke_width\n"
-        "- line: x1, y1, x2, y2, color, stroke_width, cap (flat|square|round)\n"
-        "- polyline / polygon: points [[x,y],...], color, fill, stroke_width, "
-        "close\n"
-        "- ink: points [[x,y,width],...] (width optional, else stroke_width), "
-        "color, smooth (default true): a filled line whose width varies per "
-        "point, for tapered inking\n"
-        "- text: x, y, text, size (pixels), color, font, bold, italic, "
-        "anchor (top-left|baseline|center); \\n starts a new line\n"
-        "- linear_gradient: x, y, w, h (fill box), stops [[0,\"#000\"],[1,\"#fff\"]], "
-        "direction (horizontal|vertical|diagonal), or x1, y1, x2, y2 for any axis\n"
-        "- radial_gradient: stops plus either x, y, w, h (ellipse inscribed in "
-        "the box) or cx, cy, radius (or rx, ry, angle) to fill only that ellipse\n"
-        "- image: x, y, data (base64 PNG/JPEG) or path (absolute file path); "
-        "w, h optional, natural size if both omitted\n"
-        "- svg: x, y, svg (markup) or path (absolute .svg file); w, h as for image\n"
-        "- clear: x, y, w, h to erase back to transparency\n"
-        "Colours accept #rrggbb, #rrggbbaa, SVG names, or [r,g,b,a]."
+        "- line: x1, y1, x2, y2, color, stroke_width, cap\n"
+        "- polyline / polygon: points, color, fill, stroke_width, close\n"
+        "- ink: points as [x, y] or [x, y, width], color, smooth\n"
+        "- text: x, y, text, size, color, font, bold, italic, anchor\n"
+        "- linear_gradient: box or x1, y1, x2, y2, stops, direction\n"
+        "- radial_gradient: stops plus a box or cx, cy, radius (rx, ry, angle)\n"
+        "- image: x, y, data or path; w, h optional\n"
+        "- svg: x, y, svg or path; w, h optional\n"
+        "- clear: x, y, w, h"
     ),
     "properties": {
         "type": {
@@ -309,11 +298,9 @@ DRAW_COMMAND = {
         "close": {"type": "boolean"},
         "points": {"type": "array", "items": {
             "type": "array", "items": {"type": "number"},
-            "minItems": 2, "maxItems": 3},
-            "description": "[x, y] pairs; ink also takes [x, y, width]."},
-        "smooth": {"type": "boolean", "default": True,
-                   "description": "ink: pass a Catmull-Rom curve through the points."},
-        "svg": {"type": "string", "description": "SVG markup for an svg command."},
+            "minItems": 2, "maxItems": 3}},
+        "smooth": {"type": "boolean", "default": True},
+        "svg": {"type": "string"},
         "text": {"type": "string"},
         "size": {"type": "integer"},
         "font": {"type": "string"},
@@ -324,10 +311,8 @@ DRAW_COMMAND = {
         "direction": {"type": "string",
                       "enum": ["horizontal", "vertical", "diagonal"]},
         "stops": {"type": "array", "items": {"type": "array"}},
-        "data": {"type": "string", "description": "base64 image bytes"},
-        "path": {"type": "string",
-                 "description": "Absolute PNG/JPEG/WebP/BMP path for image, or .svg "
-                                "path for svg; instead of data or svg markup"},
+        "data": {"type": "string"},
+        "path": {"type": "string"},
     },
     "required": ["type"],
 }
@@ -340,14 +325,13 @@ BRUSH_POINTS = {
         "pressure": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
         "tilt_x": {"type": "number", "minimum": -60, "maximum": 60},
         "tilt_y": {"type": "number", "minimum": -60, "maximum": 60},
-        "timestamp_ms": {"type": "number", "minimum": 0,
-                         "description": "Increasing sample time; default 16 ms spacing."}},
+        "timestamp_ms": {"type": "number", "minimum": 0}},
         "required": ["x", "y"], "additionalProperties": False},
 }
 
 ALPHA_LOCKED_PROP = {
     "type": "boolean",
-    "description": "Paint changes colour only; transparency stays as it is.",
+    "description": "Paint changes colour only; existing transparency stays.",
 }
 
 INHERIT_ALPHA_PROP = {
@@ -357,21 +341,44 @@ INHERIT_ALPHA_PROP = {
 
 INCLUDE_TREE_PROP = {
     "type": "boolean", "default": False,
-    "description": "Also return the whole layer tree as `layers`; inspect_document gives the same.",
+    "description": "Also return the layer tree as `layers`.",
 }
 
 PARAMS_FILE_PROP = {
     "type": "string",
-    "description": ("Absolute path to a .json file holding an object of this "
-                    "tool's arguments; inline arguments override it. Keeps "
-                    "large commands, points or edits out of the conversation."),
+    "description": "Absolute .json of arguments; inline values override the file.",
 }
 
 SAVE_PATH_PROP = {
     "type": "string",
-    "description": ("Absolute .png path. The image is written there and left "
-                    "out of the reply; the text result names the file."),
+    "description": "Absolute .png path. The image is written there and omitted from the reply.",
 }
+
+
+# Verified against the plugin ops: each of these returns data and leaves the
+# document, its history, and its viewing time unchanged, or restores them.
+READ_ONLY_TOOLS = frozenset({
+    "status", "inspect_document", "get_image", "get_pixel", "list_brushes",
+    "list_capabilities", "sample_colors", "compare_images", "plan_stroke",
+    "inspect_repair", "repair_status", "animation_review", "preview_changes",
+    "self_test",
+})
+
+# Deletes a layer, a document, history, a keyframe, or a prepared repair.
+DESTRUCTIVE_TOOLS = frozenset({
+    "delete_layer", "close_document", "merge_layer_down", "discard_repair",
+    "trigger_action", "undo", "animation_frame",
+})
+
+
+def _annotations(name):
+    read_only = name in READ_ONLY_TOOLS
+    return {
+        "title": name.replace("_", " ").capitalize(),
+        "readOnlyHint": read_only,
+        "destructiveHint": False if read_only else name in DESTRUCTIVE_TOOLS,
+        "openWorldHint": False,
+    }
 
 
 def tool(name, description, properties, required=None, op=None, image=False,
@@ -388,6 +395,7 @@ def tool(name, description, properties, required=None, op=None, image=False,
     return {
         "name": name,
         "description": description,
+        "annotations": _annotations(name),
         "inputSchema": {
             "type": "object",
             "properties": properties,
@@ -428,59 +436,56 @@ def _list_capabilities(args):
                       "kind must be 'filters', 'blending_modes' or 'workflow'")
 
 
+# plan_stroke and paint_stroke publish this same object, so their schemas cannot drift.
+STROKE_ARGUMENTS = {"spec": STROKE}
+
 TOOLS = [
-    tool('import_animation','Import validated ordered PNGs into an owned native animation, preserving padding, FPS and anchor annotation.',
+    tool('import_animation','Import ordered PNGs as one native animation. Padding, FPS, and the anchor annotation are kept.',
          {'name':{'type':'string','minLength':1,'maxLength':128},'frames':FRAMES,'fps':{'type':'integer','minimum':1,'maximum':120},
           'anchor':{'type':'object','properties':{'x':{'type':'number'},'y':{'type':'number'}},'required':['x','y'],'additionalProperties':False},
           'end':{'type':'integer','minimum':0,'maximum':99999}},
          required=['name','frames','fps','anchor']),
-    tool('animation_review','Aligned previous/current/next clean frames or ROI; preserves source timeline/history and returns registration.',
+    tool('animation_review','Previous, current, and next frames, aligned. Does not change the timeline or history.',
          {'document':DOCUMENT_PROP,'layer':LAYER_PROP,'time':{'type':'integer'},'region':REGION_PROP,'max_size':{'type':'integer'}},
          required=['document','time'],image=True),
-    tool('prepare_repair','Freeze an explicit baseline/allowed mask for at most three bounded repair alternatives; source unchanged.',
+    tool('prepare_repair','Freeze a baseline and an allowed mask for at most three repair candidates. The source stays unchanged.',
          {'target':TARGET,'region':REGION_PROP,'allowed_mask':{'type':'string'},'target_mask':{'type':'string'},
           'region_mode':{'type':'string','enum':['roi','whole_frame'],'default':'roi'},
           'defect':{'type':'string'},'intended_change':{'type':'string'}},
          required=['target','region','allowed_mask','defect','intended_change']),
-    tool('render_repair','Render a frozen replacement or native stroke/clone/patch/warp on an owned static copy; source unchanged.',
+    tool('render_repair','Render one candidate on an owned static copy. The source document stays unchanged.',
          {'transaction':{'type':'string'},'edit':{'type':'object'}},required=['transaction','edit']),
-    tool('inspect_repair','Inspect one frozen preview image with small metadata for both views. Panel is scaled; before/after are exact-resolution transparent PNGs.',
+    tool('inspect_repair','Return one frozen preview. before and after stay full resolution; max_size applies only to panel.',
          {'transaction':{'type':'string'},'candidate':{'type':'string'},'max_size':{'type':'integer'},
           'view':{'type':'string','enum':['composite','raw_layer'],'default':'composite'},
-          'image':{'type':'string','enum':['panel','before','after'],'default':'panel',
-                   'description':'Select one image content block. before/after retain full resolution and alpha; max_size applies only to panel.'}},required=['transaction','candidate'],image=True),
-    tool('commit_repair','Atomically apply one frozen candidate with dependency checks and idempotent outcome; one native Undo.',
+          'image':{'type':'string','enum':['panel','before','after'],'default':'panel'}},required=['transaction','candidate'],image=True),
+    tool('commit_repair','Apply one frozen candidate once. A repeat of the same commit returns the same outcome. One native Undo.',
          {'transaction':{'type':'string'},'candidate':{'type':'string'}},required=['transaction','candidate']),
-    tool('repair_status','Read session-local transaction outcome after an ambiguous response; no replay.',
+    tool('repair_status','Read a repair transaction outcome. Does not replay the commit.',
          {'transaction':{'type':'string'}},required=['transaction']),
-    tool('discard_repair','Release a prepared repair baseline and its candidates without source changes.',
+    tool('discard_repair','Drop a prepared repair and its candidates. The source document is not edited.',
          {'transaction':{'type':'string'}},required=['transaction']),
-    tool('sample_colors','Bounded sRGB region statistics: linear-light alpha-weighted mean and deterministic 4-bit palette.',
+    tool('sample_colors','sRGB region mean in linear light, plus a deterministic 4-bit palette.',
          {'document':DOCUMENT_PROP,'layer':LAYER_PROP,'region':REGION_PROP,'time':{'type':'integer','minimum':0},
           'palette_size':{'type':'integer','minimum':1,'maximum':16}},required=['document']),
-    tool('compare_images','Aligned before/after/difference/protected-violation panels; changed and visibly changed pixel counts, before/after alpha IoU, and with target_mask its IoU/coverage and Manhattan boundary distance.',
+    tool('compare_images','Aligned before/after/difference panels, changed-pixel counts, and mask overlap.',
          {'before':{'type':'string'},'after':{'type':'string'},'allowed_mask':{'type':'string'},'target_mask':{'type':'string'},
           'offset':{'type':'object'},'landmarks':{'type':'array'},'alpha_threshold':{'type':'integer','minimum':1,'maximum':255},
           'max_size':{'type':'integer','minimum':64,'maximum':2048}},required=['before','after'],image=True),
-    tool('plan_stroke','Plan version 1 polyline/cubic geometry and arc-length pressure/time samples; no painting.',
-         {'spec':STROKE},required=['spec']),
-    tool('paint_stroke','Execute a validated stroke plan as one native Krita stroke, restoring brush UI state.',
-         {'spec':STROKE},required=['spec']),
+    tool('plan_stroke','Plan version 1 polyline or cubic geometry with arc-length pressure and timing. Does not paint.',
+         STROKE_ARGUMENTS,required=['spec']),
+    tool('paint_stroke','Paint one validated plan as a single native stroke, then restore the brush UI.',
+         STROKE_ARGUMENTS,required=['spec']),
     tool("status",
-         "Krita's version plus every open document (index, size, colour "
-         "space, unsaved state). Start here to see what you are working with.",
+         "Krita's version and every open document: index, size, colour space, unsaved state.",
          {}),
 
     tool("dismiss_recovery_dialog",
-         "Cancel Krita's active autosave Recover Files dialog, keeping recovery files. "
-         "Uses native dialog identity; refuses every other modal, including save-changes prompts. "
-         "No document edits. Safe no-op when no modal is open.",
+         "Cancel Krita's Recover Files dialog and keep the autosaves. Other modals are refused. No document edits.",
          {}),
 
     tool("inspect_document",
-         "Full detail for one document: canvas size, resolution, colour "
-         "space, the whole layer tree in docker order (top first), and the "
-         "current selection.",
+         "Canvas, resolution, colour space, the layer tree (top first), and the current selection.",
          {"document": DOCUMENT_PROP,
           "max_depth": {"type": "integer", "default": -1,
                         "description": "Group nesting to descend; -1 for all."}},
@@ -493,51 +498,40 @@ TOOLS = [
           "name": {"type": "string", "default": "Untitled"},
           "resolution_dpi": {"type": "number", "default": 300},
           "color_model": {"type": "string", "default": "RGBA",
-                          "description": "RGBA, GRAYA, CMYKA, LABA, XYZA, YCbCrA"},
+                          "description": "RGBA, GRAYA, CMYKA, LABA, XYZA, or YCbCrA."},
           "color_depth": {"type": "string", "default": "U8",
-                          "description": "U8, U16, F16 or F32. Drawing needs U8."},
-          "color_profile": {"type": "string", "default": "",
-                            "description": "Empty for Krita's default."},
-          "background": {"type": ["string", "array"],
-                         "description": "Optional fill colour, e.g. #ffffff."}},
+                          "description": "U8, U16, F16, or F32. Drawing needs U8."},
+          "color_profile": {"type": "string", "default": ""},
+          "background": {"type": ["string", "array"]}},
          required=["width", "height"]),
 
     tool("open_document",
          "Open an image file from disk in Krita.",
-         {"path": {"type": "string", "description": "Absolute path."}},
+         {"path": {"type": "string", "description": "Absolute path of the file to open."}},
          required=["path"]),
 
     tool("save_document",
-         "Save a document. Give `path` to save-as (the format follows the "
-         "extension); omit it to save over the existing file.",
+         "Save the document. `path` saves a copy under a new name; omit it to overwrite the current file.",
          {"document": DOCUMENT_PROP,
           "path": {"type": "string"}}),
 
     tool("export_document",
-         "Export a flattened copy to any format Krita can write (.png, .jpg, "
-         ".webp, .tif, ...) without changing what the document is bound to.",
+         "Write a flattened copy. The document's own file binding is unchanged.",
          {"document": DOCUMENT_PROP,
-          "path": {"type": "string", "description": "Absolute output path."},
-          "options": {"type": "object",
-                      "description": "Exporter settings, e.g. {\"quality\": 90}."}},
+          "path": {"type": "string", "description": "Absolute output path. The extension picks the format."},
+          "options": {"type": "object"}},
          required=["path"]),
 
     tool("close_document",
-         "Close a document. Refuses to discard unsaved work unless you say "
-         "so. CAUTION: Krita 5.3.3 has a bug where tearing down a "
-         "heavily-edited document sometimes crashes Krita itself (roughly one "
-         "close in five after a long editing session; it happens through "
-         "Krita's own File > Close too, and saving first does not help). "
-         "Prefer leaving documents open and letting the user close them.",
+         "Close a document. Unsaved work is kept unless discard_changes is true. "
+         "Closing a heavily edited document can crash Krita; see docs/usage.md.",
          {"document": DOCUMENT_PROP,
           "save": {"type": "boolean", "default": False},
           "discard_changes": {"type": "boolean", "default": False}}),
 
     tool("transform_image",
-         "Whole-image geometry. `action` picks the operation: resize_canvas "
-         "(change the canvas, keeping layer pixels where they are), scale "
-         "(resample everything), rotate (by degrees, clockwise), crop, or "
-         "flatten (merge all layers into one).",
+         "Whole-image geometry. resize_canvas keeps layer pixels in place; scale resamples; "
+         "rotate is clockwise degrees; crop; flatten merges every layer.",
          {"document": DOCUMENT_PROP,
           "action": {"type": "string",
                      "enum": ["resize_canvas", "scale", "rotate", "crop",
@@ -546,14 +540,12 @@ TOOLS = [
           "width": {"type": "integer"}, "height": {"type": "integer"},
           "degrees": {"type": "number"},
           "strategy": {"type": "string", "default": "Bicubic",
-                       "description": "Scaling filter: Bicubic, Bilinear, "
-                                      "NearestNeighbor, Lanczos3, Box."}},
+                       "description": "Scale filter: Bicubic, Bilinear, NearestNeighbor, Lanczos3, Box."}},
          required=["action"], transform=_transform_image),
 
     tool("create_layer",
-         "Add a layer. New layers go to the top of their parent unless you "
-         "pass `index` (0 is topmost, negative counts from the bottom). A "
-         "filelayer with `path` links an image file and follows its changes.",
+         "Add a layer. Index 0 is the top; a negative index counts from the bottom. "
+         "A filelayer links `path` and follows that file.",
          {"document": DOCUMENT_PROP,
           "name": {"type": "string", "default": "Layer"},
           "type": {"type": "string", "default": "paintlayer",
@@ -562,13 +554,12 @@ TOOLS = [
                             "vectorlayer", "transparencymask", "filtermask",
                             "transformmask", "selectionmask", "colorizemask"]},
           "parent": {"type": "string",
-                     "description": "A group layer to nest inside; omit for "
-                                    "the top level."},
+                     "description": "Group to nest inside. Omit for the top level."},
           "index": {"type": "integer"},
           "path": {"type": "string",
-                   "description": "filelayer: absolute path of the image file to link."},
+                   "description": "filelayer: absolute path of the linked image."},
           "scaling": {"type": "string", "enum": ["none", "to_image_size", "to_ppi"],
-                      "default": "none", "description": "filelayer: how to fit the file."},
+                      "default": "none"},
           "select": {"type": "boolean", "default": True},
           "opacity": {"type": "number"},
           "blending_mode": {"type": "string"},
@@ -579,21 +570,17 @@ TOOLS = [
           "include_tree": INCLUDE_TREE_PROP}),
 
     tool("set_layer",
-         "Change a layer's properties: rename it, set opacity (0-255, or 0-1), "
-         "blending mode, visibility, lock, alpha lock, inherit alpha (clip to "
-         "the layers below), and optionally make it active.",
+         "Rename a layer or set opacity (0-255 or 0-1), blend mode, visibility, locks, and inherit alpha.",
          {"document": DOCUMENT_PROP,
           "layer": LAYER_PROP,
           "new_name": {"type": "string"},
           "opacity": {"type": "number"},
-          "blending_mode": {"type": "string",
-                            "description": "See list_capabilities."},
+          "blending_mode": {"type": "string"},
           "visible": {"type": "boolean"},
           "locked": {"type": "boolean"},
           "alpha_locked": ALPHA_LOCKED_PROP,
           "inherit_alpha": INHERIT_ALPHA_PROP,
-          "select": {"type": "boolean", "default": False,
-                     "description": "Also make this the active layer."}}),
+          "select": {"type": "boolean", "default": False}}),
 
     tool("delete_layer", "Delete a layer and everything inside it.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
@@ -607,12 +594,10 @@ TOOLS = [
           "include_tree": INCLUDE_TREE_PROP}),
 
     tool("move_layer",
-         "Restack a layer, optionally into a different group. `index` is "
-         "top-first within the new parent; negative counts from the bottom, "
-         "so -1 is the bottom.",
+         "Restack a layer, optionally into another group. Index is top-first; -1 is the bottom.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "parent": {"type": "string",
-                     "description": "Target group; omit to stay put."},
+                     "description": "Target group. Omit to stay in the current parent."},
           "index": {"type": "integer", "default": 0},
           "include_tree": INCLUDE_TREE_PROP},
          required=["layer"]),
@@ -622,17 +607,14 @@ TOOLS = [
           "include_tree": INCLUDE_TREE_PROP}),
 
     tool("get_image",
-         "Render the canvas and return it as a PNG you can actually look at. "
-         "Use this to check your work. Defaults to the merged image; pass "
-         "`layer` for one layer in isolation.",
+         "Render a PNG of the merged canvas, or of one layer when `layer` is set.",
          {"document": DOCUMENT_PROP,
           "layer": {"type": "string",
                     "description": "Omit or \"merged\" for the composite."},
           "region": REGION_PROP,
-          "time": {'type':'integer','minimum':0,'description':'Explicit raster playback time; restored without history. Onion skins excluded.'},
+          "time": {'type':'integer','minimum':0,'description':'Raster playback time. Restored afterwards. Onion skins are excluded.'},
           "max_size": {"type": "integer", "default": 1024,
-                       "description": "Longest edge of the returned image; "
-                                      "the canvas is never upscaled."}},
+                       "description": "Longest edge. The canvas is never upscaled."}},
          image=True),
 
     tool("get_pixel", "Read the exact colour at one pixel.",
@@ -641,17 +623,12 @@ TOOLS = [
          required=["x", "y"]),
 
     tool("draw",
-         "Paint shapes, text, gradients and bitmaps onto an RGBA/8-bit paint "
-         "layer. Commands are drawn in order, so later ones sit on top. "
-         "Records one native Undo command using the Linux/Krita 6.0.4 helper. "
-         "Animated layers need `time`, the exact keyframe to paint. Respects the active "
-         "selection including feathered alpha. Use draw_brush for native strokes.",
+         "Paint commands in order on an RGBA/8-bit layer, as one Undo. "
+         "An animated layer needs `time` of an existing key. The selection, including feather, applies.",
          {"document": DOCUMENT_PROP,
           "layer": LAYER_PROP,
           "time": {"type": "integer", "minimum": 0, "maximum": 99999,
-                   "description": "Animated layers only: an existing keyframe time. A held "
-                                  "time is rejected; add a key there with animation_frame. "
-                                  "The viewing time is restored afterwards."},
+                   "description": "Animated layers: an existing keyframe. A held time is rejected."},
           "antialias": {"type": "boolean", "default": True},
           "commands": {"type": "array", "items": DRAW_COMMAND,
                        "minItems": 1}},
@@ -661,14 +638,8 @@ TOOLS = [
          {"document": DOCUMENT_PROP, "query": {"type": "string"}}),
 
     tool("draw_brush",
-         "Draw using Krita's actual brush engine, preset, size, opacity, eraser "
-         "and selection. Pressure/continuous modes keep one native stroke across "
-         "pressure, tilt and timestamp samples with one Undo. Requires the native helper. "
-         "Segments mode retains independent lines. Path mode "
-         "paints a connected path at pressure 1 with one Undo entry. Pass `strokes` "
-         "instead of `points` to paint up to 64 strokes in one call and one Undo; "
-         "each may set its own color, size, opacity and erase. Brush UI "
-         "settings are restored. Use an unmasked Cleanup layer above transformed parts.",
+         "One native brush stroke, or up to 64 via `strokes`, then the brush UI is restored. "
+         "Needs the native helper. Off-canvas points are rejected unless clamp is true.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "preset": {"type": "string", "description": "Exact name from list_brushes."},
           "size": {"type": "number", "minimum": 0.1, "maximum": 2048, "default": 20},
@@ -678,8 +649,7 @@ TOOLS = [
           "mode": {"type": "string", "enum": ["pressure", "continuous", "segments", "path"], "default": "pressure"},
           "points": BRUSH_POINTS,
           "strokes": {"type": "array", "minItems": 1, "maxItems": 64,
-                      "description": "Several strokes in one Undo; unset settings "
-                                     "inherit the top-level ones.",
+                      "description": "Up to 64 strokes in one Undo. Unset fields inherit the top level.",
                       "items": {"type": "object", "properties": {
                           "points": BRUSH_POINTS,
                           "color": {"type": ["string", "array"]},
@@ -688,13 +658,10 @@ TOOLS = [
                           "erase": {"type": "boolean"}},
                           "required": ["points"], "additionalProperties": False}},
           "clamp": {"type": "boolean", "default": False,
-                    "description": "Pull off-canvas points onto the nearest edge "
-                                   "instead of rejecting the call."}}),
+                    "description": "Pull off-canvas points onto the nearest edge."}}),
 
     tool("select_polygon",
-         "Set a closed polygon/lasso selection in document pixels; supports "
-         "antialias, feather and replace/add/subtract/intersect. Creates one "
-         "native Undo entry.",
+         "Set a polygon selection in document pixels. One native Undo.",
          {"document": DOCUMENT_PROP,
           "points": {"type": "array", "minItems": 3, "maxItems": 2048,
                      "items": {"type": "array", "items": {"type": "number"},
@@ -707,22 +674,16 @@ TOOLS = [
          required=["points"]),
 
     tool("selection_to_layer",
-         "Extract the active selection from a static, unmasked paint layer "
-         "using native copy/cut-to-new-layer. Copy uses one Undo; cut uses two "
-         "(cut and new layer). Clearing selection adds one more Undo entry. "
-         "Preserves document coordinates. Clears selection "
-         "by default so the next brush edit is not unexpectedly clipped.",
+         "Copy or cut the selection from a static unmasked paint layer into a new layer. "
+         "The selection clears unless clear_selection is false.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "name": {"type": "string"},
           "mode": {"type": "string", "enum": ["copy", "cut"], "default": "copy"},
           "clear_selection": {"type": "boolean", "default": True}}),
 
     tool("transform_layer",
-         "Preview or apply an absolute paint/group-layer move/rotate/scale/shear around "
-         "a pivot in document pixels. Apply uses a native MCP Transform mask, "
-         "preserving original pixels and recording the pose change in Undo. "
-         "Repeated calls replace the MCP transform; they do not accumulate. "
-         "Preview renders the actual Krita composite on a detached clone.",
+         "Move, rotate, scale, or shear around a pivot. Apply replaces the MCP transform mask; it does not stack. "
+         "Preview does not change the document.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["preview", "apply"], "default": "preview"},
           "pivot": {"type": "object", "properties": {
@@ -730,9 +691,9 @@ TOOLS = [
                     "required": ["x", "y"], "additionalProperties": False},
           "dx": {"type": "number", "default": 0}, "dy": {"type": "number", "default": 0},
           "degrees": {"type": "number", "default": 0,
-                      "description": "Clockwise degrees in document coordinates."},
+                      "description": "Clockwise degrees."},
           "scale_x": {"type": "number", "minimum": -100, "maximum": 100, "default": 1,
-                      "description": "Negative values flip; absolute value must be >= 0.01."},
+                      "description": "Negative flips. Absolute value must be at least 0.01."},
           "scale_y": {"type": "number", "minimum": -100, "maximum": 100, "default": 1},
           "shear_x": {"type": "number", "minimum": -10, "maximum": 10, "default": 0},
           "shear_y": {"type": "number", "minimum": -10, "maximum": 10, "default": 0},
@@ -742,11 +703,8 @@ TOOLS = [
          image=True),
 
     tool("warp_layer",
-         "Preview/apply a small local pull on a static unmasked RGBA/U8 paint layer. "
-         "Bilinear raster deformation on a new duplicate, preserving and hiding the source. "
-         "Actual Krita composite preview changes no source/history; apply is one Undo. "
-         "center maps to center+offset with a smooth radius falloff; offset length <= radius/4. "
-         "Soft selection weights destination changes. Cannot be used in edit_batch.",
+         "Pull pixels inside a radius on a static unmasked RGBA/U8 layer. Offset length is at most radius/4. "
+         "Apply writes a new layer and hides the source. Not valid inside edit_batch.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["preview", "apply"], "default": "preview"},
           "center": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
@@ -758,12 +716,11 @@ TOOLS = [
           "max_size": {"type": "integer", "minimum": 64, "maximum": 2048, "default": 1024}},
          required=["center", "offset", "radius"], image=True),
 
-    tool("select_content", "Select alpha, matching RGBA colors, a contiguous 4-connected "
-         "color region or an imported raster mask. One native Undo. Omit layer for composite sampling.",
+    tool("select_content", "Select by alpha, colour, a 4-connected region, or an imported mask. One native Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["alpha", "color", "contiguous", "mask"], "default": "alpha"},
           "color": {"type": ["string", "array"]}, "data": {"type": "string", "description": "Base64 PNG mask."},
-          "data_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data."},
+          "data_path": {"type": "string", "description": "Absolute image path instead of data."},
           "channel": {"type": "string", "enum": ["alpha", "luminance"], "default": "alpha"},
           "x": {"type": "integer"}, "y": {"type": "integer"},
           "threshold": {"type": "integer", "minimum": 0, "maximum": 255, "default": 1},
@@ -771,21 +728,18 @@ TOOLS = [
           "feather": {"type": "integer", "minimum": 0, "maximum": 256, "default": 0},
           "combine": {"type": "string", "enum": ["replace", "add", "subtract", "intersect"], "default": "replace"}}),
 
-    tool("texture_patch", "Place texture from a PNG or source layer into a target rectangle, "
-         "with opacity and optional PNG alpha/luminance mask. Respects selection, one native Undo.",
+    tool("texture_patch", "Place a PNG or source-layer texture into a rectangle. Respects the selection. One Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP, "source_layer": LAYER_PROP,
-          "data": {"type": "string", "description": "Base64 image; mutually exclusive with source_layer."},
-          "data_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data."},
+          "data": {"type": "string", "description": "Base64 image. Not together with source_layer."},
+          "data_path": {"type": "string", "description": "Absolute image path instead of data."},
           "source_region": REGION_PROP, "region": REGION_PROP,
           "opacity": {"type": "number", "minimum": 0, "maximum": 1, "default": 1},
-          "mask_data": {"type": "string", "description": "Base64 PNG matching destination dimensions."},
-          "mask_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of mask_data."},
+          "mask_data": {"type": "string", "description": "Base64 mask the size of the destination."},
+          "mask_path": {"type": "string", "description": "Absolute image path instead of mask_data."},
           "mask_channel": {"type": "string", "enum": ["alpha", "luminance"], "default": "alpha"}},
          required=["region"]),
 
-    tool("clone_stamp", "Clone sampled RGBA pixels along a soft pressure-opacity stroke. "
-         "Freezes the source at stroke start, respects selection and records one Undo. "
-         "Uses a raster compositor; brush presets apply to draw_brush.",
+    tool("clone_stamp", "Clone pixels along a stroke. The source is frozen at the start. One Undo. Brush presets use draw_brush.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP, "source_layer": LAYER_PROP,
           "source": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
                      "required": ["x", "y"], "additionalProperties": False},
@@ -797,135 +751,95 @@ TOOLS = [
           "softness": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.5},
           "opacity": {"type": "number", "minimum": 0, "maximum": 1, "default": 1}}, required=["source", "points"]),
 
-    tool("edit_batch", "Apply up to 64 edits to one document as one native Undo group. "
-         "On error, undo the group and discard its redo. Supports draw/brush, selection, extraction, "
-         "transform apply, patch/clone, mask, bake, outline, background removal, recolouring, layer creation, filters "
-         "and blank/duplicate frames. "
-         "A new edit discards an existing redo branch according to Krita's normal history behavior.",
+    tool("edit_batch", "Apply up to 64 edits as one Undo group. On error the group is undone. "
+         "warp_layer is not allowed. A later edit drops the redo branch.",
          {"document": DOCUMENT_PROP, "label": {"type": "string"},
           "results": {"type": "string", "enum": ["summary", "full", "none"], "default": "summary",
-                      "description": "summary: each edit's own facts (layer name, region as [x, y, w, h]) "
-                                     "without the per-edit Undo receipt; full: every tool's complete result; "
-                                     "none: only the batch receipt."},
+                      "description": "summary omits per-edit Undo receipts; full returns each tool; none returns the batch receipt."},
           "edits": {"type": "array", "minItems": 1, "maxItems": 64, "items": {
               "type": "object", "properties": {"tool": {"type": "string"}, "arguments": {"type": "object"}},
               "required": ["tool"], "additionalProperties": False}}}, required=["edits"]),
 
-    tool("mask_layer", "Create or replace a static paint/group layer's transparency mask "
-         "from selection, a constant fill or a canvas-sized PNG. One native Undo.",
+    tool("mask_layer", "Set a transparency mask from the selection, a fill, or a canvas-sized image. One Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP, "mask": LAYER_PROP, "name": {"type": "string"},
           "mode": {"type": "string", "enum": ["selection", "fill", "image"], "default": "selection"},
           "value": {"type": "integer", "minimum": 0, "maximum": 255, "default": 255},
           "data": {"type": "string"},
-          "data_path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP path; instead of data."},
+          "data_path": {"type": "string", "description": "Absolute image path instead of data."},
           "channel": {"type": "string", "enum": ["alpha", "luminance"], "default": "alpha"}}),
 
-    tool("bake_layer", "Bake the static layer/group projection and masks into a new paint "
-         "layer and hide the preserved source. One grouped native Undo.",
+    tool("bake_layer", "Bake a static layer or group, including masks, into a new paint layer and hide the source. One Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP, "name": {"type": "string"}}),
 
-    tool("outline_layer", "Trace an antialiased outline around a layer's rendered alpha "
-         "onto a new paint layer, as for a sprite or sticker edge. outside goes "
-         "under the source and fills beneath it; inside and center go above it. "
-         "The source is untouched. One grouped native Undo.",
+    tool("outline_layer", "Trace the rendered alpha onto a new paint layer. outside sits under the source. The source is not edited.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
-          "width": {"type": "number", "minimum": 0.5, "maximum": 32, "default": 2,
-                    "description": "Outline thickness in pixels."},
+          "width": {"type": "number", "minimum": 0.5, "maximum": 32, "default": 2},
           "color": {"type": ["string", "array"], "default": "#000000"},
           "position": {"type": "string", "enum": ["outside", "inside", "center"],
                        "default": "outside"},
           "antialias": {"type": "boolean", "default": True,
-                        "description": "false gives a hard pixel-art outline from alpha >= 128."},
-          "name": {"type": "string", "description": "New layer name; default '<layer> outline'."}}),
+                        "description": "false uses a hard edge at alpha 128."},
+          "name": {"type": "string"}}),
 
-    tool("export_layers", "Write each layer as its own PNG plus manifest.json with canvas "
-         "offsets into a new directory, for sprite parts and game assets. Defaults "
-         "to the visible top-level layers. trim crops to exact alpha bounds; padding "
-         "adds a transparent margin. Read-only for the document.",
+    tool("export_layers", "Write each layer as a PNG plus manifest.json. The document is not changed. trim crops to alpha bounds.",
          {"document": DOCUMENT_PROP, "directory": {"type": "string",
                                                    "description": "Absolute path of a new directory."},
           "layers": {"type": "array", "items": LAYER_PROP, "minItems": 1, "maxItems": 256},
-          "trim": {"type": "boolean", "default": True,
-                   "description": "false exports full-canvas images."},
+          "trim": {"type": "boolean", "default": True},
           "padding": {"type": "integer", "minimum": 0, "maximum": 512, "default": 0}},
          required=["directory"]),
 
-    tool("slice_sheet", "Cut a sprite sheet into cells. The sheet is a layer, or an "
-         "image file (`path`) or base64 PNG (`data`). auto mode splits at empty rows "
-         "and columns of transparency or of the background colour and trims each "
-         "cell; with columns it cuts each sprite row into that many frames. grid "
-         "mode uses columns x rows. output layers puts each cell on its "
-         "own layer, in place, inside a new group (one Undo); output files writes "
-         "PNGs and manifest.json into a new directory, optionally as uniform frames "
-         "ready for import_animation.",
+    tool("slice_sheet", "Cut a sprite sheet into cells, as layers or as PNG files. "
+         "The sheet is a layer, or `path` or `data` that is not imported. "
+         "auto splits on empty rows; columns forces that many frames per row.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
-          "path": {"type": "string", "description": "Absolute PNG/JPEG/WebP/BMP sheet; instead of layer."},
-          "data": {"type": "string", "description": "Base64 PNG sheet; instead of layer."},
+          "path": {"type": "string", "description": "Absolute image sheet instead of layer."},
+          "data": {"type": "string", "description": "Base64 PNG sheet instead of layer."},
           "mode": {"type": "string", "enum": ["auto", "grid"], "default": "auto"},
           "background": {"type": ["string", "array"], "default": "auto",
-                         "description": "auto (alpha if the sheet has any transparency, "
-                                        "else the corner colour), transparent, or a colour."},
+                         "description": "auto, transparent, or a colour. auto uses alpha, else the corner colour."},
           "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 24,
-                        "description": "Per-channel distance still counted as background colour."},
+                        "description": "Per-channel distance still treated as background."},
           "threshold": {"type": "integer", "minimum": 1, "maximum": 255, "default": 16,
                         "description": "Lowest alpha counted as content."},
           "min_gap": {"type": "integer", "minimum": 1, "default": 2,
-                      "description": "auto: empty pixels needed between cells. Raise it to "
-                                     "keep detached parts, such as a held sword, together."},
+                      "description": "auto: empty pixels required between cells."},
           "min_pixels": {"type": "integer", "minimum": 1, "default": 16,
-                         "description": "Cells with fewer content pixels are dropped as specks."},
+                         "description": "Smaller cells are dropped."},
           "columns": {"type": "integer", "minimum": 1, "maximum": 256,
-                      "description": "grid: cells per row. auto: frames per sprite row; a row "
-                                     "without that many clean gaps is cut at its emptiest "
-                                     "columns, for frames whose effects or ground overlap."},
+                      "description": "grid: cells per row. auto: frames per sprite row."},
           "rows": {"type": "integer", "minimum": 1, "maximum": 256},
           "margin": {"type": "integer", "minimum": 0, "default": 0},
           "spacing": {"type": "integer", "minimum": 0, "default": 0},
-          "trim": {"type": "boolean", "default": True,
-                   "description": "grid: crop each cell to its content."},
+          "trim": {"type": "boolean", "default": True},
           "output": {"type": "string", "enum": ["layers", "files"], "default": "layers"},
-          "name": {"type": "string", "description": "layers: group name."},
+          "name": {"type": "string"},
           "directory": {"type": "string", "description": "files: absolute path of a new directory."},
           "prefix": {"type": "string", "default": "cell"},
           "uniform": {"type": "boolean", "default": False,
-                      "description": "files: pad every PNG to the largest cell size."},
+                      "description": "files: pad every PNG to the largest cell."},
           "align": {"type": "string", "enum": ["center", "bottom", "row"], "default": "center",
-                    "description": "files with uniform: where a cell sits in its frame; "
-                                   "bottom keeps feet on one baseline; row keeps each cell's "
-                                   "height above the lowest edge of its sprite row, so a hop survives."},
+                    "description": "With uniform: center, bottom baseline, or row so a hop stays up."},
           "padding": {"type": "integer", "minimum": 0, "maximum": 512, "default": 0}}),
 
-    tool("remove_background", "Make a solid background transparent on a paint layer. "
-         "The colour defaults to the corners; contiguous mode clears only background "
-         "connected to the layer edge, so enclosed areas of the same colour survive. "
-         "softness gives a soft matte, and defringe removes the background colour "
-         "left in semi-transparent edges. mode defringe only cleans edges of an "
-         "already transparent image. Respects selection; one native Undo.",
+    tool("remove_background", "Make a solid background transparent. contiguous keeps enclosed areas of the same colour. "
+         "defringe only cleans edges and needs color. One Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["contiguous", "global", "defringe"],
                    "default": "contiguous"},
           "color": {"type": ["string", "array"],
-                    "description": "Background colour; default auto from the corners. "
-                                   "Required for mode defringe."},
+                    "description": "Background colour. Default is the corners. Required for defringe."},
           "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 12,
-                        "description": "Largest per-channel distance cleared completely. "
-                                       "Raise it slowly: art close to the backdrop colour goes first."},
+                        "description": "Per-channel distance cleared completely."},
           "softness": {"type": "integer", "minimum": 0, "maximum": 255, "default": 12,
-                       "description": "Distance band above tolerance that fades to opaque."},
+                       "description": "Band above tolerance that fades to opaque."},
           "holes": {"type": "integer", "minimum": 0, "default": 0,
-                    "description": "contiguous: also clear enclosed background areas of at least "
-                                   "this many pixels, such as backdrop between legs. 0 keeps them."},
+                    "description": "contiguous: also clear enclosed areas of at least this many pixels."},
           "defringe": {"type": "boolean", "default": True},
           "shrink": {"type": "integer", "minimum": 0, "maximum": 8, "default": 0,
-                     "description": "Erode the remaining alpha by this many pixels to cut a halo."}}),
+                     "description": "Erode remaining alpha by this many pixels."}}),
 
-    tool("quantize_layer", "Recolour a paint layer. quantize maps every pixel to the "
-         "nearest colour (Euclidean sRGB) of `palette`, or of `colors` median-cut colours, "
-         "with optional ordered dithering; `accents` keeps small detail colours off blended "
-         "edges and `despeckle` cleans lone pixels; `replace` then swaps palette entries by "
-         "position for colour variants. swap shifts only pixels within `tolerance` of each "
-         "palette colour by the difference to its replace colour, keeping their shading. "
-         "Alpha is kept unless alpha is threshold. Respects selection; one native Undo.",
+    tool("quantize_layer", "Map pixels to the nearest palette colour, or shift matches in swap mode so shading remains. One Undo.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["quantize", "swap"], "default": "quantize"},
           "palette": {"type": "array", "items": {"type": ["string", "array"]},
@@ -938,27 +852,22 @@ TOOLS = [
           "dither": {"type": "string", "enum": ["none", "ordered"], "default": "none"},
           "accents": {"type": "array", "items": {"type": ["string", "array"]},
                       "minItems": 1, "maxItems": 256,
-                      "description": "quantize: palette colours, such as a gem or blush, used only "
-                                     "for pixels within `tolerance` of them."},
+                      "description": "quantize: these colours match only within tolerance."},
           "despeckle": {"type": "boolean", "default": False,
-                        "description": "quantize: a pixel matching none of its 8 neighbours takes "
-                                       "the neighbour colour nearest its original. Not with dither."},
+                        "description": "quantize: lone pixels take the nearest neighbour colour. Not with dither."},
           "tolerance": {"type": "integer", "minimum": 0, "maximum": 255, "default": 32,
                         "description": "swap and accents: per-channel distance from a palette colour."},
           "alpha": {"type": "string", "enum": ["keep", "threshold"], "default": "keep",
-                    "description": "threshold makes alpha 0 or 255 at 128, for pixel art."}}),
+                    "description": "threshold cuts alpha at 128."}}),
 
-    tool("preview_changes", "Capture a composite checkpoint, compare before/after with a "
-         "difference map, or discard it. Panels: before, after, magenta changed pixels. "
-         "Read-only for the document; up to 8 checkpoints / 128 MiB.",
+    tool("preview_changes", "Store a composite checkpoint, compare it, or discard it. Does not edit the document. At most 8 checkpoints.",
          {"document": DOCUMENT_PROP,
           "mode": {"type": "string", "enum": ["checkpoint", "compare", "discard"], "default": "checkpoint"},
           "checkpoint": {"type": "string"},
           "max_size": {"type": "integer", "minimum": 64, "maximum": 2048, "default": 1536}}, image=True),
 
-    tool("animation_frame", "Inspect raster keyframes; create blank/duplicate frames, delete "
-         "an exact frame after frame 0, scrub, set FPS/clip range or toggle onion skin. Edits "
-         "use native Undo. Initial animation preserves static content at frame 0. Scrub changes viewing time.",
+    tool("animation_frame", "Inspect or edit raster keys: blank, duplicate, delete after frame 0, scrub, FPS, or onion skin. "
+         "Scrub changes the viewing time. Delete removes that key.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
           "mode": {"type": "string", "enum": ["info", "blank", "duplicate", "delete", "settings", "scrub", "onion"], "default": "info"},
           "time": {"type": "integer", "minimum": 0, "maximum": 100000},
@@ -967,9 +876,7 @@ TOOLS = [
           "fps": {"type": "integer", "minimum": 1, "maximum": 120},
           "start": {"type": "integer", "minimum": 0}, "end": {"type": "integer", "minimum": 0}}),
 
-    tool("export_animation", "Export composite frames, transparent atlas and JSON manifest "
-         "with FPS, durations, rectangles and anchors to a new directory. Restores viewing time. "
-         "Up to 128 frames / 16 megapixel atlas. Existing directories are preserved.",
+    tool("export_animation", "Write composite frames, an atlas, and a JSON manifest into a new directory. Viewing time is restored.",
          {"document": DOCUMENT_PROP, "directory": {"type": "string"},
           "start": {"type": "integer", "minimum": 0}, "end": {"type": "integer", "minimum": 0},
           "step": {"type": "integer", "minimum": 1, "default": 1},
@@ -977,8 +884,7 @@ TOOLS = [
           "anchor": {"type": "object", "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
                      "required": ["x", "y"], "additionalProperties": False}}, required=["directory"]),
 
-    tool("undo", "Undo native Krita history entries on the requested document. "
-         "Use the undo_steps returned by a workflow tool; also affects manual history.",
+    tool("undo", "Undo native history on this document, including edits made by hand.",
          {"document": DOCUMENT_PROP,
           "count": {"type": "integer", "minimum": 1, "maximum": 128, "default": 1}}),
     tool("redo", "Redo native Krita history entries on the requested document.",
@@ -986,14 +892,11 @@ TOOLS = [
           "count": {"type": "integer", "minimum": 1, "maximum": 128, "default": 1}}),
 
     tool("apply_filter",
-         "Run one of Krita's filters over a layer, optionally limited to a "
-         "region. Call list_capabilities first to see names and parameters.",
+         "Run one Krita filter on a layer, optionally inside a region. Names come from list_capabilities.",
          {"document": DOCUMENT_PROP, "layer": LAYER_PROP,
-          "filter": {"type": "string", "description": "e.g. blur, gaussianblur, "
-                                                      "invert, desaturate."},
+          "filter": {"type": "string"},
           "settings": {"type": "object",
-                       "description": "Filter parameters; must match the "
-                                      "filter's own names."},
+                       "description": "Parameter names must match the filter."},
           "region": REGION_PROP},
          required=["filter"]),
 
@@ -1005,18 +908,12 @@ TOOLS = [
                             "feather"]},
           "x": {"type": "integer"}, "y": {"type": "integer"},
           "width": {"type": "integer"}, "height": {"type": "integer"},
-          "value": {"type": "integer", "default": 255,
-                    "description": "Selection strength 0-255."},
-          "add": {"type": "boolean", "default": False,
-                  "description": "Union with the existing selection."},
-          "amount": {"type": "integer", "default": 1,
-                     "description": "Pixels, for grow/shrink/feather."}}),
+          "value": {"type": "integer", "default": 255},
+          "add": {"type": "boolean", "default": False},
+          "amount": {"type": "integer", "default": 1}}),
 
     tool("list_capabilities",
-         "Discover filters with typed editable parameters, curated blending modes, "
-         "or workflow support. kind workflow reports Python APIs separately from "
-         "the verified native helper/ABI, target-layer restrictions and resource limits "
-         "without editing or switching the document.",
+         "List filters, blend modes, or workflow limits. Does not edit or switch the document.",
          {"kind": {"type": "string", "default": "filters",
                    "enum": ["filters", "blending_modes", "workflow"]},
           "document": DOCUMENT_PROP, "layer": LAYER_PROP,
@@ -1024,15 +921,12 @@ TOOLS = [
          transform=_list_capabilities),
 
     tool("trigger_action",
-         "Fire an allowlisted Krita history or selection action. Useful ids: edit_undo, edit_redo, "
-         "deselect, select_all, invert_selection.",
+         "Run an allowlisted action: edit_undo, edit_redo, deselect, select_all, invert_selection.",
          {"name": {"type": "string"}},
          required=["name"]),
 
     tool("self_test",
-         "Verify the bridge end to end: document creation, pixel round-trip, "
-         "channel order, drawing, PNG encoding and layer handling. Run this "
-         "first if something looks wrong.",
+         "Check the bridge: a document, a pixel round-trip, drawing, and PNG encoding.",
          {}),
 ]
 

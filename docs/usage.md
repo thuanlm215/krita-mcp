@@ -1,6 +1,8 @@
 # Using Krita MCP
 
-Version 1.6 exposes 57 tools and 66 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
+Version 1.8 exposes 57 tools and 66 bridge operations. Reconnect the MCP client after a plugin update. A running chat keeps the schema it discovered at startup.
+
+Each tool has MCP annotations (`title`, `readOnlyHint`, `destructiveHint`, `openWorldHint`) from the 2025-06-18 spec. `readOnlyHint` is true only for lookups and plans that leave the document alone. `destructiveHint` is true when the tool can delete a layer, a document, history, a keyframe, or a prepared repair. `openWorldHint` is false: the server talks only to local Krita. Field notes that used to sit in the schema are in this file and in [workflows.md](workflows.md).
 
 ## Tools
 
