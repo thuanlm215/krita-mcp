@@ -24,3 +24,46 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: python -m unittest tests.test_core tests.test_transport tests.test_shutdown tests.test_planner tests.test_feedback tests.test_isolated_log_gate
+
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            xvfb dbus-x11 \
+            libegl1 libgl1 libglib2.0-0 libxkbcommon0 libdbus-1-3 \
+            libfontconfig1 libxcb-cursor0 libxkbcommon-x11-0
+      - name: Install test libraries
+        run: pip install PyQt6 pillow
+      - name: Cache Krita AppImage
+        id: cache-krita
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/krita-appimage
+          key: krita-appimage-6.0.4
+      - name: Setup Krita AppImage
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          ./scripts/setup_krita.sh "$HOME/.cache/krita-appimage" "$HOME/.local/bin"
+      - name: Run live tests (removed execution gate)
+        run: python3 scripts/run_isolated_tests.py --output artifacts/ci-removed --no-fixture-hooks -- python3 -m unittest tests.test_removed_execution
+      - name: Run live MCP tests
+        continue-on-error: true
+        run: python3 scripts/run_isolated_tests.py --output artifacts/ci-mcp -- python3 tests/test_mcp.py
+      - name: Run live workflow tests
+        continue-on-error: true
+        run: python3 scripts/run_isolated_tests.py --output artifacts/ci-workflow -- python3 -m unittest tests.test_workflow
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-live-artifacts
+          path: artifacts/ci-*
