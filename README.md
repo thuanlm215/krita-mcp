@@ -18,7 +18,7 @@ The three sheets are a layer stack: wash, line, color. The dashed loop and the p
 
 ## Install
 
-Krita 5.2 or newer covers documents, layers, geometric drawing, filters, and export. Brush pressure, native pixel Undo, warp, batches, and exact raster frames need **Linux, Krita 6.0.4, Qt6, little-endian**, plus the helper in [native/README.md](native/README.md). Anywhere else those calls return `unsupported`.
+Krita 5.2 or newer covers documents, layers, inspection, and export. Anything that writes pixels or history needs **Linux, Krita 6.0.4, Qt6, little-endian**, plus the helper in [native/README.md](native/README.md): `draw`, filters, selections, brush strokes, warp, batches, Undo, and raster frames. Anywhere else those calls return `unsupported`.
 
 The server is Python 3.8 or newer and the standard library. Krita loads a plugin in its own process. The MCP client runs `krita-mcp` beside it. Close Krita before the installer writes `kritarc`.
 
