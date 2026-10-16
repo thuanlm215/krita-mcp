@@ -234,6 +234,8 @@ class ToolSchemaTests(unittest.TestCase):
             elif ann["destructiveHint"]:
                 destructive.add(spec["name"])
         self.assertEqual(read_only, set(mcp_server.READ_ONLY_TOOLS))
+        # It opens and closes a scratch document, so a client must ask first.
+        self.assertNotIn("self_test", read_only)
         self.assertEqual(destructive, set(mcp_server.DESTRUCTIVE_TOOLS))
 
 

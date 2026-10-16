@@ -361,8 +361,9 @@ READ_ONLY_TOOLS = frozenset({
     "status", "inspect_document", "get_image", "get_pixel", "list_brushes",
     "list_capabilities", "sample_colors", "compare_images", "plan_stroke",
     "inspect_repair", "repair_status", "animation_review", "preview_changes",
-    "self_test",
 })
+# self_test is not read-only: it creates and closes a scratch document, and
+# closing is the teardown path that can crash Krita.
 
 # Deletes a layer, a document, history, a keyframe, or a prepared repair.
 DESTRUCTIVE_TOOLS = frozenset({
