@@ -48,5 +48,8 @@ if [ -n "$missing" ]; then
     exit 1
 fi
 
-version=$("$WRAPPER" --version 2>&1) || { echo "$version" >&2; exit 1; }
+# Krita needs a display even for --version.
+run=()
+if [ -z "${DISPLAY:-}" ] && command -v xvfb-run > /dev/null; then run=(xvfb-run -a); fi
+version=$("${run[@]}" "$WRAPPER" --version 2>&1) || { echo "$version" >&2; exit 1; }
 echo "Krita setup complete: $(echo "$version" | tail -n 1)"
