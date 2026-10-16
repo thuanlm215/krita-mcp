@@ -587,11 +587,10 @@ def _trace(text):
 def _settle_after_close(budget=0.6):
     """Let Krita finish retiring a document before we answer the client.
 
-    Document.close() only starts the teardown: views are dropped with
-    deleteLater() and the document is retired from Krita's part list through
-    the event loop. Until that finishes, Krita.documents() still hands back
-    the dead document, and the next request -- which arrives a few
-    milliseconds later -- reads freed memory and takes the process down.
+    Document.close() schedules view deletion with deleteLater(). Complete
+    that event-loop work within this request so the next operation cannot
+    run partway through view retirement. The layer-model timer queue must
+    already be drained by _flush_before_close while its converter is valid.
 
     Dispatching DeferredDelete alone is not enough; measured over repeated
     runs, the teardown needs real event-loop time. The bridge's own queued
@@ -617,8 +616,11 @@ def _flush_before_close(doc):
     KisNodeModel::setDummiesFacade resets its index converter without clearing
     its pending update queue. Closing the last active view can leave the timer
     processing that queue through a null converter. Flush while nodes live.
+    This uses Qt meta-object slots and does not require the native helper.
     """
-    if _krita().version() != "6.0.4":
+    # Official builds append " (git <hash>)" to the release number.
+    # The old exact-string gate silently skipped the workaround in CI.
+    if _krita().version().partition(" ")[0] != "6.0.4":
         return
     from .compat import QtCore, QObject, QtCompat
     doc.waitForDone()
@@ -628,6 +630,7 @@ def _flush_before_close(doc):
             continue
         for model in window.qwindow().findChildren(QObject):
             if model.metaObject().className() == "KisNodeModel":
+                _trace("close: flushing KisNodeModel")
                 QtCore.QMetaObject.invokeMethod(model,"processUpdateQueue",QtCompat.DirectConnection)
 
 
@@ -921,17 +924,12 @@ def op_close_document(params):
     # at some arbitrary later point when its C++ object is already gone.
     gc.collect()
 
-    # KNOWN KRITA DEFECT (5.3.3): tearing a document down occasionally faults
-    # inside Krita's own C++ teardown, taking the process with it. Measured at
-    # roughly one close in five at the end of a long editing session; a clean
-    # document closes reliably. It reproduces identically through Krita's own
-    # File > Close action, so it is not an artefact of using libkis, and
-    # nothing available from a plugin prevents it -- draining the scheduler,
-    # disabling autosave, clearing the modified flag, collecting stale
-    # wrappers and pumping the event loop were all tried and none of them
-    # removes it. Everything above narrows the window; see README.md.
-    _trace("close: calling Document.close()")
+    # Closing the last view clears the layer model's index converter, but
+    # Krita 6.0.4 leaves its compressed update queue armed. Drain that queue
+    # while the nodes and converter are still valid, including on builds
+    # whose version string includes a git suffix.
     _flush_before_close(doc)
+    _trace("close: calling Document.close()")
     doc.close()
     _trace("close: close call returned")
     _settle_after_close()

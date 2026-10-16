@@ -96,7 +96,11 @@ def main():
             init.write('\nfrom . import _test_fixture\n')
     temp.joinpath("config/kritarc").write_text(
         "[python]\nenable_krita_mcp=true\n[krita_mcp]\nautostart=true\n"
-        "[General]\nOpenGLRenderer=none\nHideWelcomeScreen=true\n", encoding="utf-8")
+        "[General]\nHideWelcomeScreen=true\n", encoding="utf-8")
+    # Krita 6 reads the renderer through QSettings in kritadisplayrc, not
+    # kritarc. Keep Xvfb suites off the OpenGL canvas/texture update path.
+    temp.joinpath("config/kritadisplayrc").write_text(
+        "[General]\nOpenGLRenderer=none\n", encoding="utf-8")
     summary = {"command": command, "runtime": str(temp), "output": str(output)}
     krita = xvfb = None
     code = 1
@@ -132,7 +136,7 @@ def main():
                 # group and wait for the Krita child BEFORE stopping Xvfb.
                 # Ask the private application's event loop to quit first.
                 # No SIGKILL, including on failed tests; desktop is untouched.
-                if group_alive(krita.pid):
+                if krita.poll() is None and group_alive(krita.pid):
                     try:
                         from mcp_server import BridgeClient
                         cleanup = BridgeClient()
@@ -162,7 +166,7 @@ def main():
                         break
                 summary["process_group_stopped_before_xvfb"] = not group_alive(krita.pid)
                 summary["force_kill_used"] = False
-                krita.wait(timeout=5)
+                summary["krita_exit_after_cleanup"] = krita.wait(timeout=5)
             if xvfb is not None:
                 xvfb.terminate()
                 xvfb.wait(timeout=5)

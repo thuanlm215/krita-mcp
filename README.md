@@ -80,7 +80,7 @@ Ask for the open layer tree and set the top layer to multiply at 60%. Ask to cut
 
 Reconnect the client after a plugin update. An open chat keeps the schema it saw at startup.
 
-`close_document` can still bring Krita down on some teardown paths. *File → Close* can hit the same fault. Leave the file open and close it yourself when the session matters. [docs/usage.md](docs/usage.md#closing-documents) has the rest.
+`close_document` works around the observed Krita 6.0.4 layer-model timer crash, including official builds with a git version suffix, without requiring the native helper. Krita’s own *File → Close* is unchanged. See [Closing documents](docs/usage.md#closing-documents) for scope and details.
 
 Build and tests: [docs/development.md](docs/development.md). Reports and changes: [SECURITY.md](SECURITY.md), [CONTRIBUTING.md](CONTRIBUTING.md).
 

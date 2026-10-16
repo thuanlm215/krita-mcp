@@ -23,6 +23,8 @@ from mcp_server import BRIDGE, BridgeError, BridgeUnavailable
 
 NAME = "stress doc"
 
+HAS_HELPER = False
+
 GROUPS = os.environ.get("STRESS_GROUPS", "layers,restack,errors,reads").split(",")
 
 
@@ -77,29 +79,33 @@ def _build(tmpdir, index):
                                  "type": "grouplayer"})
     BRIDGE.call("create_layer", {"document": NAME, "name": "Nested",
                                  "parent": "G"})
-    BRIDGE.call("draw", {"document": NAME, "layer": "Art", "commands": [
-        {"type": "fill_rect", "x": 0, "y": 0, "w": 300, "h": 220,
-         "color": "#ffffff"},
-        {"type": "rect", "x": 10, "y": 10, "w": 90, "h": 60, "fill": "#e94f37",
-         "color": "#111111", "stroke_width": 3},
-        {"type": "ellipse", "x": 120, "y": 10, "w": 80, "h": 60,
-         "fill": "#3f88c5"},
-        {"type": "text", "x": 12, "y": 150, "text": "stress", "size": 22,
-         "color": "#111111"},
-    ]})
+    if HAS_HELPER:
+        BRIDGE.call("draw", {"document": NAME, "layer": "Art", "commands": [
+            {"type": "fill_rect", "x": 0, "y": 0, "w": 300, "h": 220,
+             "color": "#ffffff"},
+            {"type": "rect", "x": 10, "y": 10, "w": 90, "h": 60, "fill": "#e94f37",
+             "color": "#111111", "stroke_width": 3},
+            {"type": "ellipse", "x": 120, "y": 10, "w": 80, "h": 60,
+             "fill": "#3f88c5"},
+            {"type": "text", "x": 12, "y": 150, "text": "stress", "size": 22,
+             "color": "#111111"},
+        ]})
     if "restack" in GROUPS:
         _restack(NAME)
     if "reads" in GROUPS:
         _reads(NAME)
+    # Whole-layer filters use Krita's API even without the helper. Regional
+    # filters and selections require it, as do geometric drawing commands.
     BRIDGE.call("apply_filter", {"document": NAME, "layer": "Art",
                                  "filter": "invert"}, timeout=60)
-    BRIDGE.call("apply_filter", {"document": NAME, "layer": "Art",
-                                 "filter": "blur",
-                                 "region": {"x": 0, "y": 0, "width": 150,
-                                            "height": 120}}, timeout=60)
-    BRIDGE.call("set_selection", {"document": NAME, "mode": "rect", "x": 5,
-                                  "y": 5, "width": 40, "height": 40})
-    BRIDGE.call("set_selection", {"document": NAME, "mode": "none"})
+    if HAS_HELPER:
+        BRIDGE.call("apply_filter", {"document": NAME, "layer": "Art",
+                                     "filter": "blur",
+                                     "region": {"x": 0, "y": 0, "width": 150,
+                                                "height": 120}}, timeout=60)
+        BRIDGE.call("set_selection", {"document": NAME, "mode": "rect", "x": 5,
+                                      "y": 5, "width": 40, "height": 40})
+        BRIDGE.call("set_selection", {"document": NAME, "mode": "none"})
     BRIDGE.call("crop_image", {"document": NAME, "x": 0, "y": 0,
                                "width": 220, "height": 160}, timeout=60)
     BRIDGE.call("scale_image", {"document": NAME, "width": 150,
@@ -119,10 +125,24 @@ def _build(tmpdir, index):
     if "errors" in GROUPS:
         _errors(NAME)
     # dirty it again, exactly as the suite does before its final close
-    BRIDGE.call("set_layer", {"document": NAME, "blending_mode": "multiply"})
+    BRIDGE.call("set_layer", {"document": NAME, "blending_mode": "nonsense"})
+    BRIDGE.call("set_layer", {"document": NAME, "blending_mode": "MULTIPLY"})
+    BRIDGE.call("status", {})
+    try:
+        BRIDGE.call("close_document", {"document": NAME})
+    except BridgeError as exc:
+        if exc.kind != "unsaved_changes":
+            raise
+    else:
+        raise RuntimeError("dirty document closed without discard_changes")
 
 
 def main():
+    global HAS_HELPER
+    caps = BRIDGE.call("workflow_capabilities", {})
+    HAS_HELPER = bool(caps.get("native_helper", {}).get("available", False))
+    print("Krita: {0}; native helper: {1}".format(
+        BRIDGE.call("status", {})["krita_version"], HAS_HELPER), flush=True)
     strategy = 'close_document'
     iterations = int(sys.argv[1]) if len(sys.argv) > 1 else 8
     tmpdir = tempfile.mkdtemp(prefix="krita-stress-")
@@ -143,8 +163,10 @@ def main():
                 status = BRIDGE.call("status", {}, timeout=15)
                 still = [d for d in status["documents"]
                          if d.get("name") == NAME]
+            if still:
+                raise RuntimeError("close_document returned with target still open")
             print("  iteration {0}: ok ({1} docs open, target closed={2})"
-                  .format(i, status["open_document_count"], not still))
+                  .format(i, status["open_document_count"], not still), flush=True)
         except BridgeUnavailable:
             print("  iteration {0}: KRITA DIED".format(i))
             return 2
