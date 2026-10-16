@@ -40,4 +40,13 @@ EOF
 sed -i "s|__EXTRACT_DIR__|${EXTRACT_DIR}|g" "$WRAPPER"
 chmod +x "$WRAPPER"
 
-echo "Krita setup complete: $("$WRAPPER" --version 2>&1 | tail -n 1)"
+# Name every missing system library at once instead of one per CI run.
+missing=$(LD_LIBRARY_PATH="$EXTRACT_DIR/usr/lib" ldd "$EXTRACT_DIR/usr/bin/krita" | grep "not found" || true)
+if [ -n "$missing" ]; then
+    echo "Krita is missing system libraries:" >&2
+    echo "$missing" >&2
+    exit 1
+fi
+
+version=$("$WRAPPER" --version 2>&1) || { echo "$version" >&2; exit 1; }
+echo "Krita setup complete: $(echo "$version" | tail -n 1)"
