@@ -62,13 +62,13 @@ The wheel contains `mcp_server.py`, `painter_schema.py`, and `pykrita/`. It does
 
 ```bash
 uv build
-uvx --from dist/krita_mcp-1.8.0-py3-none-any.whl krita-mcp --list-tools
+uvx --from dist/krita_mcp-1.8.1-py3-none-any.whl krita-mcp --list-tools
 ```
 
 ## Release
 
 Publishing uses PyPI trusted publishing. GitHub Actions requests a short-lived token. There is no API token in the repository.
 
-The workflow is `.github/workflows/publish.yml`. It runs when a GitHub release is published, and only if the tag matches `version` in `pyproject.toml`. Version 1.8.0 is the current release. PyPI keeps every uploaded filename, including files from a deleted release, so the next release needs a higher version and a matching tag.
+The workflow is `.github/workflows/publish.yml`. It runs when a GitHub release is published, and only if the tag matches `version` in `pyproject.toml`. Version 1.8.1 is the current release. PyPI keeps every uploaded filename, including files from a deleted release, so the next release needs a higher version and a matching tag.
 
 Trusted publishing is already registered for this repository: project `krita-mcp`, workflow `publish.yml`, environment `pypi`. Clients install with `uvx krita-mcp`. The plugin install remains `krita-mcp install`, because Krita loads Python from its own resource folder.
